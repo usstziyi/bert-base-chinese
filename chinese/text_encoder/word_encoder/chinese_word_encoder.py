@@ -33,19 +33,19 @@ else:
     EEG_ROOT = os.path.expanduser("~/ChineseEEG")
 
 OUTPUT_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "outputs")
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../", "outputs")
 )
 
 Chinese_novels = {
     "LittlePrince": {
         "segmented_path": os.path.join(EEG_ROOT, "derivatives", "novels", "segmented_novel", "LittlePrince"),
         "run_num": 7,
-        "embedding_path": os.path.join(OUTPUT_ROOT, "embeddings", "word_level", "LittlePrince"),
+        "embedding_path": os.path.join(OUTPUT_ROOT, "text_encoder_output", "word_level", "LittlePrince"),
     },
     "GarnettDream": {
         "segmented_path": os.path.join(EEG_ROOT, "derivatives", "novels", "segmented_novel", "GarnettDream"),
         "run_num": 18,
-        "embedding_path": os.path.join(OUTPUT_ROOT, "embeddings", "word_level", "GarnettDream"),
+        "embedding_path": os.path.join(OUTPUT_ROOT, "text_encoder_output", "word_level", "GarnettDream"),
     }
 }
 
@@ -251,3 +251,7 @@ for run_index, texts in enumerate(all_run_texts, start=1):
     )
 
 print("\nAll runs completed.")
+
+
+# uv run  .\chinese_word_encoder.py --novel_name GarnettDream
+# uv run  .\chinese_word_encoder.py --novel_name LittlePrince

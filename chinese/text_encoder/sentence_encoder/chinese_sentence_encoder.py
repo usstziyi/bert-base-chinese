@@ -56,10 +56,10 @@ else:
 # ------------------------------------------------------------
 # Output root
 # ------------------------------------------------------------
-# 固定为脚本所在目录的 ../outputs
+# 固定为脚本所在目录的 ../../../outputs
 # 不依赖当前工作目录 cwd
 OUTPUT_ROOT = os.path.normpath(
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "outputs")
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "../../../", "outputs")
 )
 
 # ------------------------------------------------------------
@@ -71,14 +71,14 @@ Chinese_novels = {
             EEG_ROOT, "derivatives", "novels", "segmented_novel", "LittlePrince"
         ),
         "run_num": 7,
-        "embedding_path": os.path.join(OUTPUT_ROOT, "embeddings", "sentence_level", "LittlePrince"),
+        "embedding_path": os.path.join(OUTPUT_ROOT, "text_encoder_output", "sentence_level", "LittlePrince"),
     },
     "GarnettDream": {
         "segmented_path": os.path.join(
             EEG_ROOT, "derivatives", "novels", "segmented_novel", "GarnettDream"
         ),
         "run_num": 18,
-        "embedding_path": os.path.join(OUTPUT_ROOT, "embeddings", "sentence_level", "GarnettDream"),
+        "embedding_path": os.path.join(OUTPUT_ROOT, "text_encoder_output", "sentence_level", "GarnettDream"),
     }
 }
 
@@ -283,3 +283,7 @@ for i in range(args.run_num):
 
 
 print("\nAll runs completed.")
+
+
+# uv run chinese_sentence_encoder.py --novel_name GarnettDream
+# uv run chinese_sentence_encoder.py --novel_name LittlePrince
