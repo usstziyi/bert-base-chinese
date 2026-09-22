@@ -10,6 +10,7 @@ from load_eeg import load_eeg
 from load_text import load_text, Chinese_novels
 
 
+
 class ChineseEEGDataset(Dataset):
     """
     ChineseEEG sentence-level dataset.
@@ -275,3 +276,26 @@ if __name__ == "__main__":
     print("EEG lengths:", batch["eeg_lengths"])
     print("Attention mask shape:", batch["attention_mask"].shape)
     print("Texts:", batch["text"])
+
+    # batch = next(iter(loader))
+
+    # device = torch.device(
+    #     "cuda" if torch.cuda.is_available() else "cpu"
+    # )
+
+    # eeg = batch["eeg"].to(device)
+    # eeg_mask = batch["attention_mask"].to(device)
+
+    # encoder = EEGEncoder(
+    #     eeg_channels=eeg.shape[1],
+    #     input_samples=eeg.shape[-1],
+    #     projection_dim=768,
+    # ).to(device)
+
+    # eeg_features = encoder(
+    #     eeg=eeg,
+    #     attention_mask=eeg_mask,
+    # )
+
+    # print(eeg.shape)
+    # print(eeg_features.shape)
