@@ -1,0 +1,20 @@
+[project]
+name = "bert-base-chinese"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "007", email = "007lookworld@gmail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "torch>=2.14.0",
+    "transformers>=5.17.0",
+]
+
+[project.scripts]
+bert-base-chinese = "bert_base_chinese:main"
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
