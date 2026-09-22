@@ -71,14 +71,14 @@ Chinese_novels = {
             EEG_ROOT, "derivatives", "novels", "segmented_novel", "LittlePrince"
         ),
         "run_num": 7,
-        "embedding_path": os.path.join(OUTPUT_ROOT, "embeddings", "LittlePrince"),
+        "embedding_path": os.path.join(OUTPUT_ROOT, "embeddings", "sentence_level", "LittlePrince"),
     },
     "GarnettDream": {
         "segmented_path": os.path.join(
             EEG_ROOT, "derivatives", "novels", "segmented_novel", "GarnettDream"
         ),
         "run_num": 18,
-        "embedding_path": os.path.join(OUTPUT_ROOT, "embeddings", "GarnettDream"),
+        "embedding_path": os.path.join(OUTPUT_ROOT, "embeddings", "sentence_level", "GarnettDream"),
     }
 }
 
