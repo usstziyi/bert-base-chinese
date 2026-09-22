@@ -185,7 +185,17 @@ print(
 # ============================================================
 # 10. 可视化整个 run + TEXT 区间
 # ============================================================
+start_time = 0.0     # 起点（秒）
+end_time = 10      # 终点（秒），None 表示到数据结尾，不能超过数据时长
+
 raw_with_segments = raw.copy()
+
+if start_time > 0 or end_time is not None:
+    raw_with_segments.crop(
+        tmin=start_time,
+        tmax=end_time
+    )
+
 raw_with_segments.plot(
     duration=20,       # 每个窗口显示 20 秒
     n_channels=10,     # 同时显示 30 个通道
