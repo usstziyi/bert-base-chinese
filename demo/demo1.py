@@ -3,7 +3,6 @@ from transformers import AutoTokenizer
 tokenizer = AutoTokenizer.from_pretrained("bert-base-chinese")
 
 text = "我喜欢自然语言处理，和深度学习。"
-text = "我喜欢machine learning"
 
 # ① text -> tokens
 tokens = tokenizer.tokenize(text)
