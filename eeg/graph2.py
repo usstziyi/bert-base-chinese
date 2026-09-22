@@ -182,3 +182,35 @@ plt.show(block=True)
 # ============================================================
 spectrum.plot(average=True,color="red")
 plt.show(block=True)
+
+
+# ============================================================
+# 12. 频段功率头皮地形图（PSD topomap）
+# 颜色表示该频段在该头皮位置上的功率大小
+# 说明在你这个 run 的整个记录期间，8–13 Hz 功率在这些区域相对更明显
+# 意思是在那个电极附近，Delta 频段的 PSD 较高
+# ============================================================
+
+
+spectrum = raw.compute_psd(
+    method="welch",
+    fmin=0.5,
+    fmax=30,
+    picks="eeg"
+)
+
+bands = {
+    'Delta (1-4 Hz)':   (1, 4),
+    'Theta (4-8 Hz)':   (4, 8),
+    'Alpha (8-13 Hz)':  (8, 13),
+    'Beta (13-30 Hz)':  (13, 30),
+}
+spectrum.plot_topomap(
+    bands=bands,
+    colorbar=True,
+    size=2,
+    show=True
+)
+
+plt.show(block=True)
+
