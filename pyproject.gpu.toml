@@ -9,12 +9,30 @@ authors = [
 ]
 
 requires-python = ">=3.14"
+
 dependencies = [
     "darkdetect>=0.8.0",
     "mne>=1.13.2",
     "openpyxl>=3.1.5",
     "pandas>=3.0.6",
-    "torch>=2.14.0",
+    "torch==2.14.0",
     "transformers>=5.17.0",
 ]
 
+[project.scripts]
+bert-base-chinese = "bert_base_chinese:main"
+
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+
+
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+
+[build-system]
+requires = ["uv_build>=0.12.7,<0.13.0"]
+build-backend = "uv_build"
