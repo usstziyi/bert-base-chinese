@@ -13,34 +13,66 @@ class BertSentenceEncoder(nn.Module):
         model_name: str = "bert-base-chinese",
         device: torch.device = None,
         frozen: bool = True,
+        max_length: int = 512,
     ):
         super().__init__()
         if device is None:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.device = device
         self.frozen = frozen
+        self.max_length = max_length
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.bert = AutoModel.from_pretrained(model_name, output_hidden_states=True)
+        self.feature_dim = self.bert.config.hidden_size
         self.bert.to(device)
         if frozen:
             self.bert.requires_grad_(False)
             self.bert.eval()
 
+    @property
+    def device(self) -> torch.device:
+        """随父模型 .to(...) 更新设备。"""
+        return next(self.bert.parameters()).device
+
     def train(self, mode: bool = True):
         """父模型调用 .train() 时，保持冻结的 BERT 始终处于 eval 模式（不打开 dropout）。"""
         super().train(mode)
-        if self.frozen:
+        if not any(param.requires_grad for param in self.bert.parameters()):
             self.bert.eval()
         return self
 
     def forward(
         self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
-        special_tokens_mask: torch.Tensor,
+        texts: List[str] | str | None = None,
+        attention_mask: torch.Tensor | None = None,
+        special_tokens_mask: torch.Tensor | None = None,
+        *,
+        input_ids: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        """输入为已分词的 batch 张量，返回 (batch_size, hidden_size) 的句子向量。"""
-        if self.frozen:
+        """文本列表 -> (B, feature_dim)，保留设备和训练梯度。
+
+        也支持通过关键字传入已分词的三个张量。
+        """
+        if input_ids is None:
+            if isinstance(texts, str):
+                texts = [texts]
+            if not texts or not all(isinstance(text, str) for text in texts):
+                raise ValueError("texts must be a non-empty list of strings")
+            inputs = self.tokenizer(
+                texts, return_tensors="pt", padding=True, truncation=True,
+                max_length=self.max_length, return_special_tokens_mask=True,
+            )
+            input_ids = inputs["input_ids"]
+            attention_mask = inputs["attention_mask"]
+            special_tokens_mask = inputs["special_tokens_mask"]
+        elif texts is not None:
+            raise ValueError("Provide either texts or input_ids, not both")
+        if attention_mask is None or special_tokens_mask is None:
+            raise ValueError("Tokenized input requires both masks")
+        input_ids = input_ids.to(self.device)
+        attention_mask = attention_mask.to(self.device)
+        special_tokens_mask = special_tokens_mask.to(self.device)
+        if not any(param.requires_grad for param in self.bert.parameters()):
+            self.bert.eval()
             # 冻结模型：不建计算图，省显存
             with torch.no_grad():
                 outputs = self.bert(
@@ -71,7 +103,7 @@ class BertSentenceEncoder(nn.Module):
     def encode_texts(
         self,
         texts: List[str],
-        max_length: int = 512,
+        max_length: int | None = None,
     ) -> torch.Tensor:
         """推理便捷入口：直接传文本列表，返回 (batch_size, hidden_size) 的 CPU 张量。"""
         was_training = self.training
@@ -82,7 +114,7 @@ class BertSentenceEncoder(nn.Module):
             return_tensors="pt",
             padding=True,
             truncation=True,
-            max_length=max_length,
+            max_length=self.max_length if max_length is None else max_length,
             return_special_tokens_mask=True,
         )
         inputs = {key: value.to(self.device) for key, value in inputs.items()}
