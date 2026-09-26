@@ -45,7 +45,14 @@ def load_text(novel_name='LittlePrince', run_num=7):
 
 
 if __name__ == "__main__":
+    print("Loading text data for LittlePrince...")
     text_data = load_text(novel_name='LittlePrince', run_num=7)
+    print(len(text_data))
+    for run_texts in text_data:
+        print(len(run_texts))
+
+    print("Loading text data for GarnettDream...")
+    text_data = load_text(novel_name='GarnettDream', run_num=18)
     print(len(text_data))
     for run_texts in text_data:
         print(len(run_texts))
