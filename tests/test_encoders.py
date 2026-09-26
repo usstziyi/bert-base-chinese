@@ -5,7 +5,7 @@ import torch
 from transformers import BertConfig, BertModel
 
 from framework.eeg_encoder import EEGEncoder
-from framework.text_encoder import BertSentenceEncoder
+from framework.text_encoder import TextEncoder
 from framework.eegtext_model import EEGTextModel
 
 
@@ -26,10 +26,58 @@ def text_encoder(frozen):
     with patch("framework.text_encoder.AutoModel.from_pretrained", return_value=bert), patch(
         "framework.text_encoder.AutoTokenizer.from_pretrained", return_value=tokenize
     ):
-        return BertSentenceEncoder(device=torch.device("cpu"), frozen=frozen)
+        return TextEncoder(frozen=frozen)
 
 
 class EncoderIntegrationTests(unittest.TestCase):
+    def test_model_controls_freezing_and_infers_dimensions(self):
+        eeg = EEGEncoder(n_chans=4, n_times=128)
+        text = text_encoder(True)
+        model = EEGTextModel(
+            eeg, text, freeze_eeg_encoder=True, freeze_text_encoder=False,
+        ).train()
+        self.assertFalse(eeg.training)
+        self.assertTrue(text.bert.training)
+        self.assertFalse(text.frozen)
+        running_mean = eeg.backbone.bnorm_temporal.running_mean.clone()
+        model.compute_loss(torch.randn(2, 4, 128), ["你好", "再见"])["loss"].backward()
+        torch.testing.assert_close(eeg.backbone.bnorm_temporal.running_mean, running_mean)
+        self.assertTrue(all(p.grad is None for p in eeg.parameters()))
+        self.assertTrue(any(p.grad is not None for p in text.parameters()))
+        model.set_encoder_trainable("eeg", True)
+        self.assertTrue(eeg.training)
+        self.assertTrue(all(p.requires_grad for p in eeg.parameters()))
+        model.eval().train()
+        self.assertTrue(eeg.training)
+
+    def test_device_is_owned_by_caller(self):
+        # 即使系统报告 GPU 可用，构造编码器也不能自行迁移设备。
+        with patch("torch.cuda.is_available", return_value=True):
+            text = text_encoder(True)
+        self.assertEqual(text.device.type, "cpu")
+        model = EEGTextModel(EEGEncoder(n_chans=4, n_times=128), text).to("cpu")
+        self.assertTrue(all(p.device.type == "cpu" for p in model.parameters()))
+        if torch.cuda.is_available():
+            model.to("cuda")
+            output = model.compute_loss(torch.randn(2, 4, 128, device="cuda"), ["你好", "再见"])
+            self.assertEqual(output["text_feature"].device.type, "cuda")
+            output["loss"].backward()
+            model.to("cpu")
+            self.assertEqual(text.device.type, "cpu")
+
+    def test_custom_pooling_and_invalid_configuration(self):
+        eeg = EEGEncoder(
+            n_chans=4, n_times=128, pool1_kernel_size=8, pool2_kernel_size=8,
+        ).eval()
+        with self.assertRaises(ValueError):
+            eeg(torch.randn(2, 4, eeg.min_samples - 1))
+        self.assertEqual(eeg(torch.randn(2, 4, eeg.min_samples)).shape, (2, eeg.feature_dim))
+        text = text_encoder(True)
+        with self.assertRaises(ValueError):
+            EEGTextModel(eeg, text, temperature=0)
+        with self.assertRaises(ValueError):
+            EEGTextModel(eeg, text, text_feature_dim=768)
+
     def test_multimodal_training_and_freezing(self):
         for frozen in (True, False):
             with self.subTest(frozen=frozen):
@@ -60,7 +108,6 @@ class EncoderIntegrationTests(unittest.TestCase):
         expected = torch.stack(hidden[-4:]).mean(0)[:, 1]
         torch.testing.assert_close(encoder(["你好", "再见"]), expected)
         torch.testing.assert_close(encoder(**inputs), expected)
-        torch.testing.assert_close(encoder.encode_texts(["你好", "再见"]), expected)
         with self.assertRaises(ValueError):
             encoder([])
 

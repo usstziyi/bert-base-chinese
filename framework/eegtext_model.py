@@ -1,6 +1,9 @@
+import math
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
 
 
 class ProjectionHead(nn.Module):
@@ -53,8 +56,8 @@ class EEGTextModel(nn.Module):
         eeg_encoder: nn.Module,
         text_encoder: nn.Module,
 
-        eeg_feature_dim: int,
-        text_feature_dim: int = 768,
+        eeg_feature_dim: int | None = None,
+        text_feature_dim: int | None = None,
 
         projection_dim: int = 256,
         projection_hidden_dim: int = 512,
@@ -65,6 +68,11 @@ class EEGTextModel(nn.Module):
         temperature: float = 0.07,
     ):
         super().__init__()
+        if not math.isfinite(temperature) or temperature <= 0:
+            raise ValueError("temperature must be finite and positive")
+            
+        eeg_feature_dim = self._feature_dim(eeg_encoder, eeg_feature_dim)
+        text_feature_dim = self._feature_dim(text_encoder, text_feature_dim)
 
         # ====================================================
         # 1. Encoders
@@ -99,13 +107,33 @@ class EEGTextModel(nn.Module):
         # 4. Freeze encoders
         # ====================================================
 
-        if freeze_eeg_encoder:
-            for param in self.eeg_encoder.parameters():
-                param.requires_grad = False
+        self.set_encoder_trainable("eeg", not freeze_eeg_encoder)
+        self.set_encoder_trainable("text", not freeze_text_encoder)
 
-        if freeze_text_encoder:
-            for param in self.text_encoder.parameters():
-                param.requires_grad = False
+    @staticmethod
+    def _feature_dim(encoder, explicit_dim):
+        inferred_dim = getattr(encoder, "feature_dim", None)
+        if explicit_dim is not None and inferred_dim is not None and explicit_dim != inferred_dim:
+            raise ValueError("Explicit feature dimension does not match encoder.feature_dim")
+        dimension = explicit_dim if explicit_dim is not None else inferred_dim
+        if not isinstance(dimension, int) or dimension <= 0:
+            raise ValueError("Provide a positive feature dimension or encoder.feature_dim")
+        return dimension
+
+    def set_encoder_trainable(self, modality: str, trainable: bool):
+        """统一设置梯度及训练模式；投影头始终独立训练。"""
+        if modality not in ("eeg", "text"):
+            raise ValueError("modality must be 'eeg' or 'text'")
+        encoder = getattr(self, f"{modality}_encoder")
+        encoder.requires_grad_(trainable)
+        encoder.train(self.training if trainable else False)
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        for encoder in (self.eeg_encoder, self.text_encoder):
+            if not any(param.requires_grad for param in encoder.parameters()):
+                encoder.eval()
+        return self
 
     # ========================================================
     # EEG branch
@@ -214,6 +242,13 @@ class EEGTextModel(nn.Module):
         # z1 @ z2.T == cosine similarity
         # --------------------------------------------
 
+        if (
+            eeg_embedding.ndim != 2
+            or text_embedding.ndim != 2
+            or eeg_embedding.shape != text_embedding.shape
+            or eeg_embedding.shape[0] == 0
+        ):
+            raise ValueError("Embeddings must have the same non-empty (B, D) shape")
         logits = (
             eeg_embedding @ text_embedding.T
         ) / self.temperature

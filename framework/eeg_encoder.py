@@ -20,30 +20,37 @@ class EEGEncoder(nn.Module):
         n_chans: int = 128,
         n_times: int = 1500,
         sfreq: float = 256,
-        F1=8,                # 时间滤波器数量
-        D=2,                 # 深度乘数
-        F2=None,             # 点卷积滤波器数，None 时内部自动设为 F1*D = 16
-        kernel_length=64,    # 第一层时间卷积核长度
-        depthwise_kernel_length=16,  # 深度时间卷积核长度
-        pool1_kernel_size=4,
-        pool2_kernel_size=8,
-        pool_mode='mean',
-        drop_prob=0.25,
-        final_conv_length='auto',
+        F1: int = 8,
+        D: int = 2,
+        F2: int | None = None,
+        kernel_length: int = 64,
+        depthwise_kernel_length: int = 16,
+        pool1_kernel_size: int = 4,
+        pool2_kernel_size: int = 8,
+        pool_mode: str = "mean",
+        drop_prob: float = 0.25,
+        final_conv_length: str | int = "auto",
     ):
         super().__init__()
         self.n_chans = n_chans
+        # EEGNet 对偶数卷积核补齐后会增加一个时间点。
+        temporal_extra = int(kernel_length % 2 == 0)
+        depthwise_extra = int(depthwise_kernel_length % 2 == 0)
+        self.min_samples = max(
+            1, pool1_kernel_size * max(1, pool2_kernel_size - depthwise_extra)
+            - temporal_extra,
+        )
         self.feature_dim = F1 * D if F2 is None else F2 # 16
         eegnet = EEGNet(
-            n_chans=n_chans, 
-            n_outputs=1, 
-            n_times=n_times, 
+            n_chans=n_chans,
+            n_outputs=1,
+            n_times=n_times,
             sfreq=sfreq,
             # 以下参数均为默认值，此处显式写出以便对照
-            F1=F1, 
-            D=D, 
+            F1=F1,
+            D=D,
             F2=self.feature_dim,
-            kernel_length=kernel_length, 
+            kernel_length=kernel_length,
             depthwise_kernel_length=depthwise_kernel_length,
             pool1_kernel_size=pool1_kernel_size,
             pool2_kernel_size=pool2_kernel_size,
@@ -62,9 +69,8 @@ class EEGEncoder(nn.Module):
             raise ValueError(
                 f"Expected EEG shape (B, {self.n_chans}, T), got {tuple(eeg.shape)}"
             )
-        # EEGNet 两次池化的默认窗口为 4 和 8。
-        if eeg.shape[-1] < 32:
-            raise ValueError("EEG requires at least 32 time samples")
+        if eeg.shape[-1] < self.min_samples:
+            raise ValueError(f"EEG requires at least {self.min_samples} time samples")
         features = self.backbone(eeg)  # (B, F2, 1, T')
         return features.mean(dim=(-2, -1)) # (B, self.feature_dim)=(B, F2)=(B, 16)
-        
+
