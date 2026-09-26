@@ -6,11 +6,11 @@ import torch
 import argparse
 
 # 数据集根目录：
-EEG_ROOT = "data/ChineseEEG"
+ChineseEEG_ROOT = "data/ChineseEEG"
 # 原始小说目录
-ORI_NOVEL_PATH = os.path.join(EEG_ROOT, "derivatives", "novels", "original_novel")
+ORI_NOVEL_PATH = os.path.join(ChineseEEG_ROOT, "derivatives", "novels", "original_novel")
 # 分段小说目录
-SEG_NOVEL_PATH = os.path.join(EEG_ROOT, "derivatives", "novels", "segmented_novel")
+SEG_NOVEL_PATH = os.path.join(ChineseEEG_ROOT, "derivatives", "novels", "segmented_novel")
 
 
 

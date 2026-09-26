@@ -3,16 +3,14 @@ import mne
 import pandas as pd
 from pathlib import Path
 
-
-
-
-EEG_ROOT = "D:/AI/ChineseEEG"
+ChineseEEG_ROOT = "data/ChineseEEG"
+EEG_PREPROC_DIR = os.path.join(ChineseEEG_ROOT, "derivatives", "preproc")
 
 
 def load_eeg(novel_name="LittlePrince", filtered="filtered_0.5_30", subject="sub-04", run_num=7):
     eeg_data = []
     for run in range(1, run_num + 1):
-        eeg_dir = os.path.join(EEG_ROOT, "derivatives", "preproc", filtered, subject,f"ses-{novel_name}", "eeg")
+        eeg_dir = os.path.join(EEG_PREPROC_DIR, filtered, subject,f"ses-{novel_name}", "eeg")
         prefix=f"{subject}_ses-{novel_name}_task-reading_run-{run:02d}"
         vhdr_path = os.path.join(eeg_dir, f"{prefix}_eeg.vhdr")
         events_path = os.path.join(eeg_dir, f"{prefix}_events.tsv")
@@ -23,7 +21,7 @@ def load_eeg(novel_name="LittlePrince", filtered="filtered_0.5_30", subject="sub
 
         raw = mne.io.read_raw_brainvision(
             vhdr_path,
-            preload=False,
+            preload=True,
             verbose=False
         )
 
@@ -45,9 +43,11 @@ def load_eeg(novel_name="LittlePrince", filtered="filtered_0.5_30", subject="sub
             chapter_df.iloc[0]["sample"]
         )
 
+        # 筛选出「行起始事件（ROWS）」或「行结束事件（ROWE）」，且事件发生时间晚于首个章节标记的事件行
+        # 重置索引以保证后续遍历 segments 时的下标连续性
         rows_df = events_df[
-            events_df["trial_type"].isin(["ROWS", "ROWE"])
-            & (events_df["sample"] > first_chapter_sample)
+            events_df["trial_type"].isin(["ROWS", "ROWE"])  # 事件类型限定为行起止标记
+            & (events_df["sample"] > first_chapter_sample)  # 仅保留章节开始后的事件
         ].reset_index(drop=True)
 
         segments = []
@@ -80,13 +80,13 @@ def load_eeg(novel_name="LittlePrince", filtered="filtered_0.5_30", subject="sub
             segments_df["n_samples"] / sfreq
         )
 
+        # 预加载后整个 run 已在内存，一次性取出，再按采样点区间做内存切片
+        raw_data = raw.get_data()  # (n_channels, n_samples_all)
+
         eeg_segments = [
-            raw.get_data(
-                start=row.start_sample,
-                stop=row.end_sample + 1
-            )
+            raw_data[:, row.start_sample:row.end_sample + 1]
             for row in segments_df.itertuples()
-        ] # numpy array
+        ]  # list of (n_channels, n_samples)、各行长度不等
 
         # print(f"\n共提取 {len(eeg_segments)} 个 EEG segment")
 
@@ -122,7 +122,16 @@ def load_eeg(novel_name="LittlePrince", filtered="filtered_0.5_30", subject="sub
 
 
 if __name__ == "__main__":
-    eeg_data = load_eeg()
+    print("Loading EEG data for LittlePrince...")
+    eeg_data = load_eeg(novel_name="LittlePrince", run_num=7, subject="sub-04", filtered="filtered_0.5_30")
+    print(len(eeg_data))
+    for run_eeg_data in eeg_data:
+        # print(run_eeg_data["info"])
+        # print(run_eeg_data["sfreq"])
+        print(len(run_eeg_data["eeg_segments"]))
+
+    print("Loading EEG data for GarnettDream...")
+    eeg_data = load_eeg(novel_name="GarnettDream", run_num=18, subject="sub-04", filtered="filtered_0.5_30")
     print(len(eeg_data))
     for run_eeg_data in eeg_data:
         # print(run_eeg_data["info"])
