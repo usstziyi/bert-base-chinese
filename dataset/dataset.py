@@ -1,61 +1,34 @@
-from __future__ import annotations
-
 from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 
-from load_eeg import load_eeg
-from load_text import load_text, Chinese_novels
+if __package__:
+    from .load_eeg import load_eeg
+    from .load_text import load_text
+else:
+    from load_eeg import load_eeg
+    from load_text import load_text
 
 
 
 class ChineseEEGDataset(Dataset):
-    """
-    ChineseEEG sentence-level dataset.
-
-    Each sample corresponds to one sentence/segment pair:
-
-        EEG segment  <->  text sentence
-
-    EEG shape:
-        (n_channels, n_times)
-
-    Returned sample:
-        {
-            "eeg": Tensor[n_channels, n_times],
-            "text": str,
-            "novel_name": str,
-            "run_idx": int,       # 0-based
-            "run_num": int,       # 1-based
-            "segment_idx": int,   # 0-based within current run
-            "sfreq": float,
-        }
-    """
 
     def __init__(
         self,
         novel_name: str = "LittlePrince",
-        subject: str = "sub-04",
         filtered: str = "filtered_0.5_30",
-        run_num: Optional[int] = None,
+        subject: str = "sub-04",
+        run_num: Optional[int] = 7,
         dtype: torch.dtype = torch.float32,
     ) -> None:
         super().__init__()
 
-        if novel_name not in Chinese_novels:
-            raise ValueError(
-                f"Unknown novel_name={novel_name!r}. "
-                f"Available novels: {list(Chinese_novels.keys())}"
-            )
-
-        if run_num is None:
-            run_num = Chinese_novels[novel_name]["run_num"]
 
         self.novel_name = novel_name
-        self.subject = subject
         self.filtered = filtered
+        self.subject = subject
         self.run_num = run_num
         self.dtype = dtype
 
@@ -83,10 +56,6 @@ class ChineseEEGDataset(Dataset):
                 f"EEG={len(self.eeg_data)}, text={len(self.text_data)}"
             )
 
-        # Flatten all run-level pairs into one index table.
-        #
-        # We do not copy EEG arrays here. We only save indexes, so the
-        # original run/segment structure remains available.
         self.samples: List[Dict[str, int]] = []
 
         for run_idx, (run_eeg, run_texts) in enumerate(
@@ -148,25 +117,7 @@ def eeg_text_collate_fn(
     batch: List[Dict[str, Any]],
     max_len: int = 1500,
 ) -> Dict[str, Any]:
-    """
-    Collate function with fixed-length EEG padding.
 
-    Every EEG segment is padded (or truncated) to exactly `max_len`
-    time points, so the output shape is always (B, C, max_len),
-    regardless of the sentence durations inside the batch.
-
-    Input EEG:
-        sample["eeg"] -> (C, T_i)
-
-    Output EEG:
-        eeg            -> (B, C, max_len)
-        eeg_lengths    -> (B,)   # min(T_i, max_len)
-        attention_mask -> (B, max_len)
-
-    attention_mask:
-        1 = valid EEG sample
-        0 = padding
-    """
 
     if len(batch) == 0:
         raise ValueError("batch must not be empty")
@@ -196,6 +147,7 @@ def eeg_text_collate_fn(
     length_list: List[int] = []
 
     for sample in batch:
+        # 截断
         eeg = sample["eeg"][:, :max_len]  # (C, T_i'), T_i' <= max_len
 
         # 在 pad 之前记录有效长度 = min(原始长度, max_len)，
@@ -206,6 +158,7 @@ def eeg_text_collate_fn(
         if pad_t > 0:
             eeg = F.pad(eeg, (0, pad_t))  # 在最后一维（时间维）右侧补 0
 
+        # pad之后的 EEG 片段，形状为 (C, max_len)，
         eeg_list.append(eeg)
 
     eeg = torch.stack(eeg_list, dim=0)  # (B, C, max_len)
@@ -215,7 +168,7 @@ def eeg_text_collate_fn(
     attention_mask = (
         torch.arange(max_len).unsqueeze(0)  # (1, max_len)
         < lengths.unsqueeze(1)              # (B, 1)
-    ).long()                                # (B, max_len); 填充位为 0
+    )                                       # (B, max_len) bool; 填充位为 False
 
     return {
         "eeg": eeg,
@@ -273,9 +226,8 @@ if __name__ == "__main__":
 
     print("\n========== One batch ==========")
     print("EEG batch shape:", batch["eeg"].shape)
-    print("EEG lengths:", batch["eeg_lengths"])
-    print("Attention mask shape:", batch["attention_mask"].shape)
-    print("Texts:", batch["text"])
+    for i, text in enumerate(batch["text"]):
+        print(f"{i}[{len(text)}]: {text}")
 
     # batch = next(iter(loader))
 

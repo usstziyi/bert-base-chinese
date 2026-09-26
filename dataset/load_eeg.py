@@ -88,7 +88,6 @@ def load_eeg(novel_name="LittlePrince", filtered="filtered_0.5_30", subject="sub
             for row in segments_df.itertuples()
         ]  # list of (n_channels, n_samples)、各行长度不等
 
-        # print(f"\n共提取 {len(eeg_segments)} 个 EEG segment")
 
         # print("\n========== 检查 ROWS / ROWE / TEXT 数量 ==========")
         # n_rows = (rows_df["trial_type"] == "ROWS").sum()

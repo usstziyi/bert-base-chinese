@@ -21,10 +21,10 @@ class BertSentenceEncoder(nn.Module):
         self.frozen = frozen
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.bert = AutoModel.from_pretrained(model_name, output_hidden_states=True)
+        self.bert.to(device)
         if frozen:
             self.bert.requires_grad_(False)
-        self.bert.to(device)
-        self.bert.eval()
+            self.bert.eval()
 
     def train(self, mode: bool = True):
         """父模型调用 .train() 时，保持冻结的 BERT 始终处于 eval 模式（不打开 dropout）。"""
@@ -41,27 +41,31 @@ class BertSentenceEncoder(nn.Module):
     ) -> torch.Tensor:
         """输入为已分词的 batch 张量，返回 (batch_size, hidden_size) 的句子向量。"""
         if self.frozen:
-            # 冻结推理：不建计算图，省显存
+            # 冻结模型：不建计算图，省显存
             with torch.no_grad():
                 outputs = self.bert(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                 )
         else:
+            # 不冻结模型：建计算图，开显存，开 dropout
             outputs = self.bert(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
             )
 
-        # 最后 4 层 hidden states 求平均 -> (batch, seq_len, hidden)
+        # (4, B, L, H)
         last_four = torch.stack(outputs.hidden_states[-4:], dim=0)
+        # 最后 4 层 hidden states 求平均 -> (B, L, H)
         hidden = last_four.mean(dim=0)
 
         # 排除 [CLS]/[SEP]/[PAD] 等特殊 token，再做 mean pooling
+        # (B, L)
         mask = attention_mask * (1 - special_tokens_mask)
-        mask = mask.unsqueeze(-1)
-        sentence_embeddings = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
-        return sentence_embeddings
+        mask = mask.unsqueeze(-1)  # (B, L, 1)
+        # (B, L, H) -> (B, H)
+        sentence_output = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+        return sentence_output
 
     @torch.no_grad()
     def encode_texts(
@@ -83,7 +87,8 @@ class BertSentenceEncoder(nn.Module):
         )
         inputs = {key: value.to(self.device) for key, value in inputs.items()}
 
-        embeddings = self(
+        # (B, H)
+        sentence_output = self(
             input_ids=inputs["input_ids"],
             attention_mask=inputs["attention_mask"],
             special_tokens_mask=inputs["special_tokens_mask"],
@@ -91,11 +96,11 @@ class BertSentenceEncoder(nn.Module):
 
         if was_training:
             self.train()
-        return embeddings.cpu()
+        return sentence_output.cpu()
 
 
 if __name__ == "__main__":
     encoder = BertSentenceEncoder()
     texts = ["今天天气很好", "我们去看电影吧"]
-    embeddings = encoder.encode_texts(texts)
-    print(embeddings.shape)  # torch.Size([2, 768])
+    sentence_output = encoder.encode_texts(texts)
+    print(sentence_output.shape)  # torch.Size([2, 768])
