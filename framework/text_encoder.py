@@ -89,9 +89,9 @@ class BertSentenceEncoder(nn.Module):
 
         # (B, H)
         sentence_output = self(
-            input_ids=inputs["input_ids"],
-            attention_mask=inputs["attention_mask"],
-            special_tokens_mask=inputs["special_tokens_mask"],
+            input_ids=inputs["input_ids"],  # (B, L)
+            attention_mask=inputs["attention_mask"],  # (B, L)
+            special_tokens_mask=inputs["special_tokens_mask"],  # (B, L)
         )
 
         if was_training:
@@ -103,4 +103,5 @@ if __name__ == "__main__":
     encoder = BertSentenceEncoder()
     texts = ["今天天气很好", "我们去看电影吧"]
     sentence_output = encoder.encode_texts(texts)
+    # (B, H)
     print(sentence_output.shape)  # torch.Size([2, 768])
