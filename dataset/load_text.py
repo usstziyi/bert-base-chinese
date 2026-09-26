@@ -6,30 +6,19 @@ import torch
 import argparse
 
 # 数据集根目录：
-EEG_ROOT = "D:/AI/ChineseEEG"
-
-Chinese_novels = {
-    "LittlePrince": {
-        "segmented_path": os.path.join(
-            EEG_ROOT, "derivatives", "novels", "segmented_novel", "LittlePrince"
-        ),
-        "run_num": 7,
-    },
-    "GarnettDream": {
-        "segmented_path": os.path.join(
-            EEG_ROOT, "derivatives", "novels", "segmented_novel", "GarnettDream"
-        ),
-        "run_num": 18,
-    }
-}
+EEG_ROOT = "data/ChineseEEG"
+# 原始小说目录
+ORI_NOVEL_PATH = os.path.join(EEG_ROOT, "derivatives", "novels", "original_novel")
+# 分段小说目录
+SEG_NOVEL_PATH = os.path.join(EEG_ROOT, "derivatives", "novels", "segmented_novel")
 
 
-def load_text(novel_name='LittlePrince', run_num=7, batch_size=32):
-    novel_cfg = Chinese_novels[novel_name]
-    segmented_path = novel_cfg["segmented_path"]
+
+def load_text(novel_name='LittlePrince', run_num=7):
+    segmented_path = os.path.join(SEG_NOVEL_PATH, novel_name)
 
     text_data = []
-    # 便利每个run
+    # 遍历每个run
     for i in range(run_num):
         novel_path = os.path.join(
             segmented_path,
@@ -37,7 +26,7 @@ def load_text(novel_name='LittlePrince', run_num=7, batch_size=32):
         )
 
 
-        # Read Excel
+        # Read Excel file
         wb = openpyxl.load_workbook(novel_path, read_only=True, data_only=True)
         wsheet = wb.active
 
@@ -56,7 +45,7 @@ def load_text(novel_name='LittlePrince', run_num=7, batch_size=32):
 
 
 if __name__ == "__main__":
-    text_data = load_text()
+    text_data = load_text(novel_name='LittlePrince', run_num=7)
     print(len(text_data))
     for run_texts in text_data:
         print(len(run_texts))
