@@ -10,6 +10,7 @@ authors = [
 
 requires-python = ">=3.14"
 dependencies = [
+    "braindecode>=1.8.1",
     "darkdetect>=0.8.0",
     "mne>=1.13.2",
     "openpyxl>=3.1.5",
