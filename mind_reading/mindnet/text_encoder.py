@@ -82,3 +82,5 @@ class TextEncoder(nn.Module):
         # (B, L, H) -> (B, H)
         sentence_output = (hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
         return sentence_output
+
+    

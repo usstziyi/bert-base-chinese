@@ -21,12 +21,9 @@ import torch.nn.functional as F
 from torch.utils.data import Subset
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
 from dataset import ChineseEEGDataset, create_eegtext_dataloader
-from framework import EEGEncoder, TextEncoder, EEGTextModel
+from mindnet import EEGEncoder, TextEncoder, EEGTextModel, ProjectionHead
+
 
 
 def parse_args():
@@ -182,7 +179,6 @@ def main():
     args = parse_args()
     # 数据加载器使用相对 data/ 路径，统一以项目根目录为工作目录。
     args.output_dir = args.output_dir.resolve()
-    os.chdir(PROJECT_ROOT)
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
