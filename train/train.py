@@ -134,8 +134,9 @@ def train_epoch(model, loader, optimizer, device, args):
         optimizer.step()
         total_loss += loss.item() * eeg.size(0)
         count += eeg.size(0)
-        if step % args.log_every == 0 or step == len(loader):
-            print(f"  step {step}/{len(loader)}  train_loss={total_loss / count:.4f}", flush=True)
+        print(f"  step {step}/{len(loader)}  train_loss={total_loss / count:.4f}", flush=True)
+        # if step % args.log_every == 0 or step == len(loader):
+        #     print(f"  step {step}/{len(loader)}  train_loss={total_loss / count:.4f}", flush=True)
     return total_loss / count
 
 
