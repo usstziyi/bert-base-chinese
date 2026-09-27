@@ -89,25 +89,19 @@ def load_eeg(novel_name="LittlePrince", filtered="filtered_0.5_30", subject="sub
         ]  # list of (n_channels, n_samples)、各行长度不等
 
 
-        # print("\n========== 检查 ROWS / ROWE / TEXT 数量 ==========")
-        # n_rows = (rows_df["trial_type"] == "ROWS").sum()
-        # n_rowe = (rows_df["trial_type"] == "ROWE").sum()
-        # n_segments = len(segments_df)
+        n_rows = (rows_df["trial_type"] == "ROWS").sum()
+        n_rowe = (rows_df["trial_type"] == "ROWE").sum()
+        n_segments = len(segments_df)
 
-        # assert n_rows == n_rowe, (
-        #     f"ROWS/ROWE 数量不一致: ROWS={n_rows}, ROWE={n_rowe}"
-        # )
+        # 检查 ROWS / ROWE / TEXT 数量是否一致
+        assert n_rows == n_rowe, (
+            f"ROWS/ROWE 数量不一致: ROWS={n_rows}, ROWE={n_rowe}"
+        )
+        assert n_segments == n_rows, (
+            f"Segment 数量异常: segments={n_segments}, ROWS={n_rows}"
+        )
 
-        # assert n_segments == n_rows, (
-        #     f"Segment 数量异常: segments={n_segments}, ROWS={n_rows}"
-        # )
 
-        # print(
-        #     f"检查通过: "
-        #     f"ROWS={n_rows}, "
-        #     f"ROWE={n_rowe}, "
-        #     f"TEXT={n_segments}"
-        # )
 
         run_eeg_data = {}
         run_eeg_data["eeg_segments"] = eeg_segments

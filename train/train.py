@@ -13,19 +13,18 @@ import random
 import sys
 import time
 from datetime import datetime
-from functools import partial
 
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Subset
+from torch.utils.data import Subset
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from dataset.dataset import ChineseEEGDataset, eeg_text_collate_fn
+from dataset import ChineseEEGDataset, create_eegtext_dataloader
 from framework import EEGEncoder, TextEncoder, EEGTextModel
 
 
@@ -42,7 +41,6 @@ def parse_args():
     parser.add_argument("--text-lr", type=float, default=2e-5)
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
-    parser.add_argument("--max-len", type=int, default=1500, help="EEG 截断/补齐长度")
     parser.add_argument("--eeg-scale", type=float, default=1e6, help="MNE 的 V 转为 μV；推理须保持一致")
     parser.add_argument("--text-model", default="bert-base-chinese")
     parser.add_argument("--text-max-length", type=int, default=512)
@@ -58,7 +56,7 @@ def parse_args():
     args = parser.parse_args()
     if args.run_num < 2 or args.batch_size < 2:
         parser.error("run-num 和 batch-size 至少为 2")
-    for name in ("epochs", "max_len", "text_max_length", "projection_dim", "projection_hidden_dim", "log_every"):
+    for name in ("epochs", "text_max_length", "projection_dim", "projection_hidden_dim", "log_every"):
         if getattr(args, name) <= 0:
             parser.error(f"{name} 必须大于 0")
     for name in ("lr", "text_lr", "max_grad_norm", "eeg_scale", "temperature"):
@@ -96,15 +94,14 @@ def make_loaders(args, device):
     options = dict(
         batch_size=args.batch_size, num_workers=args.num_workers,
         pin_memory=device.type == "cuda",
-        collate_fn=partial(eeg_text_collate_fn, max_len=args.max_len),
     )
     generator = torch.Generator().manual_seed(args.seed)
-    train_loader = DataLoader(
+    train_loader = create_eegtext_dataloader(
         Subset(dataset, train_indices), shuffle=True, generator=generator,
         # 单样本 batch 没有负样本，对比损失恒为零；只在尾批为 1 时丢弃。
         drop_last=len(train_indices) % args.batch_size == 1, **options,
     )
-    val_loader = DataLoader(Subset(dataset, val_indices), shuffle=False, **options)
+    val_loader = create_eegtext_dataloader(Subset(dataset, val_indices), shuffle=False, **options)
     return train_loader, val_loader, n_chans, sfreq
 
 
@@ -181,7 +178,7 @@ def main():
 
     train_loader, val_loader, n_chans, sfreq = make_loaders(args, device)
     model = EEGTextModel(
-        eeg_encoder=EEGEncoder(n_chans=n_chans, n_times=args.max_len, sfreq=sfreq),
+        eeg_encoder=EEGEncoder(),
         text_encoder=TextEncoder(
             model_name=args.text_model,
             max_length=args.text_max_length,
