@@ -1,67 +1,53 @@
-"""EEGNet 特征编码器，供 EEGTextModel 使用。"""
+"""NICE TSConv 编码器，支持变长 EEG 和右侧 padding。
+
+参考 https://github.com/eeyhsong/NICE-EEG/blob/main/nice_stand.py 。
+时间卷积 -> 时间平均池化 -> 空间卷积；用有效时间平均池化替代固定长度
+Flatten，共享空间投影和归一化仍由 EEGTextModel 完成。
+原 EEGNet 实现保存在 eeg_encoder_eegnet_backup.py。
+"""
 
 from collections import OrderedDict
 
 import torch
 from torch import nn
-from braindecode.models import EEGNet
 
 
 class EEGEncoder(nn.Module):
-    """将 (B, C, T) EEG 编码为 (B, feature_dim)。
+    """将 (B, C, T) EEG 编码为 (B, k)。
 
-    保留 EEGNet 时空卷积，去掉分类头，使用全局平均池化。
-    共享空间的投影和归一化由 EEGTextModel 完成。
-    可接收右侧 padding mask，排除补零区域的归一化统计和平均池化。
+    C 是电极数，k 是卷积特征通道数。空间卷积 groups=1，同时融合全部
+    电极和输入特征通道。默认适配项目的 128 电极，其余默认参数参考 NICE。
+    不包含可选的 SA/GA 模块。
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        n_chans: int = 128,
+        k: int = 40,
+        m1: int = 25,
+        m2: int = 51,
+        s: int = 5,
+        drop_prob: float = 0.5,
+    ):
         super().__init__()
-        n_chans=128
-        n_times=1500
-        sfreq=256
-        F1=8
-        D=2
-        F2=None
-        kernel_length=64
-        depthwise_kernel_length=16
-        pool1_kernel_size=4
-        pool2_kernel_size=8
-        pool_mode="mean"
-        drop_prob=0.25
-        final_conv_length="auto"
-
+        for name, value in dict(n_chans=n_chans, k=k, m1=m1, m2=m2, s=s).items():
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer")
+        if not 0 <= drop_prob <= 1:
+            raise ValueError("drop_prob must be between 0 and 1")
         self.n_chans = n_chans
-        # EEGNet 对偶数卷积核补齐后会增加一个时间点。
-        temporal_extra = int(kernel_length % 2 == 0)
-        depthwise_extra = int(depthwise_kernel_length % 2 == 0)
-        self.min_samples = max(
-            1, pool1_kernel_size * max(1, pool2_kernel_size - depthwise_extra)
-            - temporal_extra,
-        ) # 27
-        self.feature_dim = F1 * D if F2 is None else F2 # 16
-        eegnet = EEGNet(
-            n_chans=n_chans,
-            n_outputs=1,
-            n_times=n_times,
-            sfreq=sfreq,
-            # 以下参数均为默认值，此处显式写出以便对照
-            F1=F1,
-            D=D,
-            F2=self.feature_dim,
-            kernel_length=kernel_length,
-            depthwise_kernel_length=depthwise_kernel_length,
-            pool1_kernel_size=pool1_kernel_size,
-            pool2_kernel_size=pool2_kernel_size,
-            pool_mode=pool_mode,
-            drop_prob=drop_prob,
-            final_conv_length=final_conv_length,
-        )
-        self.backbone = nn.Sequential(OrderedDict(
-            (name, module)
-            for name, module in eegnet.named_children()
-            if name != "final_layer"
-        ))
+        self.feature_dim = k
+        self.min_samples = m1 + m2 - 1
+        self.backbone = nn.Sequential(OrderedDict([
+            ("conv_temporal", nn.Conv2d(1, k, (1, m1))),
+            ("pool_temporal", nn.AvgPool2d((1, m2), (1, s))),
+            ("bnorm_temporal", nn.BatchNorm2d(k)),
+            ("elu_temporal", nn.ELU()),
+            ("conv_spatial", nn.Conv2d(k, k, (n_chans, 1))),
+            ("bnorm_spatial", nn.BatchNorm2d(k)),
+            ("elu_spatial", nn.ELU()),
+            ("dropout", nn.Dropout(drop_prob)),
+        ]))
 
     @staticmethod
     def _time_mask(features: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
@@ -76,30 +62,26 @@ class EEGEncoder(nn.Module):
             )
         if eeg.shape[-1] < self.min_samples:
             raise ValueError(f"EEG requires at least {self.min_samples} time samples")
-
         if attention_mask is None:
-            features = self.backbone(eeg) # (B, F2, 1, T)
-            return features.mean(dim=(-2, -1)) # (B, feature_dim)=(B, F2)
-
+            # (B, 1, C, T) -> (B, k, 1, L) -> (B, k)
+            return self.backbone(eeg.unsqueeze(1)).mean(dim=(-2, -1))
         if attention_mask.shape != (eeg.shape[0], eeg.shape[-1]):
             raise ValueError("EEG attention_mask must have shape (B, T)")
         attention_mask = attention_mask.to(device=eeg.device)
-        
         if not torch.all((attention_mask == 0) | (attention_mask == 1)):
             raise ValueError("EEG attention_mask must contain only 0 or 1")
-            
         attention_mask = attention_mask.bool()
-        lengths = attention_mask.sum(dim=-1) # (B,)每个EEG样本有效时间点数
-        expected = torch.arange(eeg.shape[-1], device=eeg.device)[None, :] < lengths[:, None] # (B, T)
+        lengths = attention_mask.sum(dim=-1)
+        expected = torch.arange(eeg.shape[-1], device=eeg.device)[None, :] < lengths[:, None]
         if not torch.equal(attention_mask, expected):
             raise ValueError("EEG attention_mask must describe contiguous valid samples followed by right padding")
         if torch.any(lengths < self.min_samples):
             raise ValueError(f"Each EEG sample requires at least {self.min_samples} valid time samples")
 
-        features = eeg.masked_fill(~attention_mask[:, None, :], 0)
+        features = eeg.masked_fill(~attention_mask[:, None, :], 0).unsqueeze(1)
         for layer in self.backbone:
             if isinstance(layer, nn.BatchNorm2d) and layer.training:
-                # 将有效位置打包后沿用原 BatchNorm，保留参数、运行统计和 checkpoint 键。
+                # 只用有效位置计算 BN，避免补零污染训练统计量和 running stats。
                 valid = self._time_mask(features, lengths)[:, 0].expand(
                     -1, features.shape[2], -1,
                 )
@@ -111,20 +93,8 @@ class EEGEncoder(nn.Module):
                 features = restored.permute(0, 3, 1, 2)
             else:
                 features = layer(features)
-
-            # 使用每个样本独立通过该层时的输出长度，保留卷积的边界 padding 语义。
-            if isinstance(layer, (nn.Conv2d, nn.AvgPool2d, nn.MaxPool2d)):
-                def time_value(value):
-                    return value[-1] if isinstance(value, tuple) else value
-
-                kernel = time_value(layer.kernel_size)
-                stride = time_value(layer.stride or layer.kernel_size)
-                padding = time_value(layer.padding)
-                dilation = time_value(getattr(layer, "dilation", 1))
-                lengths = (lengths + 2 * padding - dilation * (kernel - 1) - 1) // stride + 1
-
-            # ensuredims 尚未将时间维移动到最后，dimshuffle 之后才可使用时间 mask。
-            if features.ndim == 4 and layer is not self.backbone.ensuredims:
-                features = features.masked_fill(~self._time_mask(features, lengths), 0)
-
-        return features.sum(dim=(-2, -1)) / (lengths[:, None] * features.shape[2])
+            if isinstance(layer, (nn.Conv2d, nn.AvgPool2d)):
+                # 无 padding、dilation=1 的输出长度公式，包含向下取整。
+                lengths = (lengths - layer.kernel_size[-1]) // layer.stride[-1] + 1
+            features = features.masked_fill(~self._time_mask(features, lengths), 0)
+        return features.sum(dim=(-2, -1)) / lengths[:, None]

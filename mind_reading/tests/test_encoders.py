@@ -4,9 +4,9 @@ from unittest.mock import patch
 import torch
 from transformers import BertConfig, BertModel
 
-from framework.eeg_encoder import EEGEncoder
-from framework.text_encoder import TextEncoder
-from framework.eegtext_model import EEGTextModel
+from mindnet.eeg_encoder import EEGEncoder
+from mindnet.text_encoder import TextEncoder
+from mindnet.eegtext_model import EEGTextModel
 
 
 def tokenize(texts, **kwargs):
@@ -23,15 +23,15 @@ def text_encoder():
         vocab_size=12, hidden_size=16, num_hidden_layers=4,
         num_attention_heads=2, intermediate_size=32, output_hidden_states=True,
     ))
-    with patch("framework.text_encoder.AutoModel.from_pretrained", return_value=bert), patch(
-        "framework.text_encoder.AutoTokenizer.from_pretrained", return_value=tokenize
+    with patch("mindnet.text_encoder.AutoModel.from_pretrained", return_value=bert), patch(
+        "mindnet.text_encoder.AutoTokenizer.from_pretrained", return_value=tokenize
     ):
         return TextEncoder()
 
 
 class EncoderIntegrationTests(unittest.TestCase):
     def test_model_controls_freezing_and_infers_dimensions(self):
-        eeg = EEGEncoder(n_chans=4, n_times=128)
+        eeg = EEGEncoder(n_chans=4)
         text = text_encoder()
         model = EEGTextModel(
             eeg, text, freeze_eeg_encoder=True, freeze_text_encoder=False,
@@ -66,7 +66,7 @@ class EncoderIntegrationTests(unittest.TestCase):
         with patch("torch.cuda.is_available", return_value=True):
             text = text_encoder()
         self.assertEqual(text.device.type, "cpu")
-        model = EEGTextModel(EEGEncoder(n_chans=4, n_times=128), text).to("cpu")
+        model = EEGTextModel(EEGEncoder(n_chans=4), text).to("cpu")
         self.assertTrue(all(p.device.type == "cpu" for p in model.parameters()))
         if torch.cuda.is_available():
             model.to("cuda")
@@ -79,7 +79,7 @@ class EncoderIntegrationTests(unittest.TestCase):
 
     def test_custom_pooling_and_invalid_configuration(self):
         eeg = EEGEncoder(
-            n_chans=4, n_times=128, pool1_kernel_size=8, pool2_kernel_size=8,
+            n_chans=4, m1=15, m2=31, s=3,
         ).eval()
         with self.assertRaises(ValueError):
             eeg(torch.randn(2, 4, eeg.min_samples - 1))
@@ -94,7 +94,7 @@ class EncoderIntegrationTests(unittest.TestCase):
         for frozen in (True, False):
             with self.subTest(frozen=frozen):
                 text = text_encoder()
-                eeg = EEGEncoder(n_chans=4, n_times=128)
+                eeg = EEGEncoder(n_chans=4)
                 model = EEGTextModel(
                     eeg, text, eeg_feature_dim=eeg.feature_dim,
                     text_feature_dim=text.feature_dim, freeze_text_encoder=frozen,
@@ -134,7 +134,7 @@ class EncoderIntegrationTests(unittest.TestCase):
         self.assertTrue(text.bert.training)
         text(**tokenize(["你好"]))
         self.assertTrue(text.bert.training)
-        eeg = EEGEncoder(n_chans=4, n_times=1500, F2=24).eval()
+        eeg = EEGEncoder(n_chans=4, k=24).eval()
         for length in (1000, 1500):
             self.assertEqual(eeg(torch.randn(2, 4, length)).shape, (2, 24))
         with self.assertRaises(ValueError):
