@@ -223,6 +223,7 @@ def main():
     print(f"device={device}, channels={n_chans}, sfreq={sfreq}", flush=True)
     print(f"train={len(train_loader.dataset)}, val={len(val_loader.dataset)}, val_runs={args.val_runs}")
     print(f"保存目录：{output_dir}", flush=True)
+
     best_loss = math.inf # 正无穷大
     for epoch in range(1, args.epochs + 1):
         started = time.perf_counter()
