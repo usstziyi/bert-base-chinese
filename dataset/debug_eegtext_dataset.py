@@ -19,6 +19,7 @@ if __name__ == "__main__":
 
     print(f"Dataset size: {len(dataset)}")
 
+
     # run 1~6 做训练集，run 7 做验证集（与 train/train.py 的默认切分一致）。
     train_indices = [i for i, s in enumerate(dataset.samples) if s["run_idx"] + 1 != 7]
     val_indices = [i for i, s in enumerate(dataset.samples) if s["run_idx"] + 1 == 7]
@@ -37,10 +38,10 @@ if __name__ == "__main__":
     print(f"Train: {len(train_loader.dataset)} samples, {len(train_loader)} batches")
     print(f"Val: {len(val_loader.dataset)} samples, {len(val_loader)} batches")
 
+
     for split, loader in (("train", train_loader), ("val", val_loader)):
         for i, batch in enumerate(loader):
             print(f"{split} batch {i}: eeg={tuple(batch['eeg'].shape)}, text={len(batch['text'])}")
-
 
     # batch 是 collate 后的 dict；单样本原始形状由 eeg_lengths 还原为 (C, T_i)。
     for batch in train_loader:
