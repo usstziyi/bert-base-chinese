@@ -241,33 +241,14 @@ class EEGTextModel(nn.Module):
             or eeg_embedding.shape[0] == 0
         ):
             raise ValueError("Embeddings must have the same non-empty (B, D) shape")
+        # (B, D) @ (D, B) -> (B, B)
         logits = (eeg_embedding @ text_embedding.T) / self.temperature
         batch_size = eeg_embedding.size(0)
         labels = torch.arange(batch_size, device=eeg_embedding.device)
         # EEG -> Text
-        loss_eeg_to_text = F.cross_entropy(logits, labels)
-        # Text -> EEG
-        loss_text_to_eeg = F.cross_entropy(logits.T, labels)
+        loss_eeg_to_text = F.cross_entropy(logits, labels, reduction="mean")
+        # Text -> EEG  
+        loss_text_to_eeg = F.cross_entropy(logits.T, labels, reduction="mean")
         # 计算 EEG 与文本之间的双向对比损失
         loss = (loss_eeg_to_text + loss_text_to_eeg) / 2
         return loss
-
-    # ========================================================
-    # Complete training forward
-    # ========================================================
-
-    def compute_loss(self, eeg, text):
-
-        outputs = self.forward(
-            eeg=eeg,
-            text=text,
-        )
-
-        loss = self.contrastive_loss(
-            outputs["eeg_embedding"],
-            outputs["text_embedding"],
-        )
-
-        outputs["loss"] = loss
-
-        return outputs

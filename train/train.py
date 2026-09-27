@@ -2,6 +2,7 @@
 
 在项目根目录运行：python -m train.train --epochs 30 --batch-size 32
 也支持直接运行 train/train.py。默认将最后一个 run 留作验证集。
+编码器结构、BERT 模型和文本最大长度由各 encoder 内部定义。
 """
 
 import argparse
@@ -42,8 +43,6 @@ def parse_args():
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--eeg-scale", type=float, default=1e6, help="MNE 的 V 转为 μV；推理须保持一致")
-    parser.add_argument("--text-model", default="bert-base-chinese")
-    parser.add_argument("--text-max-length", type=int, default=512)
     parser.add_argument("--finetune-text", action="store_true", help="开启 BERT 微调")
     parser.add_argument("--projection-dim", type=int, default=256)
     parser.add_argument("--projection-hidden-dim", type=int, default=512)
@@ -56,7 +55,7 @@ def parse_args():
     args = parser.parse_args()
     if args.run_num < 2 or args.batch_size < 2:
         parser.error("run-num 和 batch-size 至少为 2")
-    for name in ("epochs", "text_max_length", "projection_dim", "projection_hidden_dim", "log_every"):
+    for name in ("epochs", "projection_dim", "projection_hidden_dim", "log_every"):
         if getattr(args, name) <= 0:
             parser.error(f"{name} 必须大于 0")
     for name in ("lr", "text_lr", "max_grad_norm", "eeg_scale", "temperature"):
@@ -73,13 +72,16 @@ def parse_args():
 
 def make_loaders(args, device):
     dataset = ChineseEEGDataset(
-        novel_name=args.novel_name, filtered=args.filtered,
-        subject=args.subject, run_num=args.run_num,
+        novel_name=args.novel_name, 
+        filtered=args.filtered,
+        subject=args.subject, 
+        run_num=args.run_num,
     )
     train_indices, val_indices = [], []
     for index, sample in enumerate(dataset.samples):
         target = val_indices if sample["run_idx"] + 1 in args.val_runs else train_indices
         target.append(index)
+        
     if min(len(train_indices), len(val_indices)) < 2:
         raise ValueError("训练集和验证集都至少需要两个 EEG–文本配对样本")
 
@@ -92,16 +94,24 @@ def make_loaders(args, device):
             raise ValueError("各 EEG 片段的通道数必须一致")
 
     options = dict(
-        batch_size=args.batch_size, num_workers=args.num_workers,
-        pin_memory=device.type == "cuda",
+        batch_size=args.batch_size, 
+        num_workers=args.num_workers,
+        pin_memory=device.type == "cuda", # 只在 CUDA 上使用 pin_memory
     )
     generator = torch.Generator().manual_seed(args.seed)
     train_loader = create_eegtext_dataloader(
-        Subset(dataset, train_indices), shuffle=True, generator=generator,
+        Subset(dataset, train_indices), 
+        shuffle=True, 
+        generator=generator,
         # 单样本 batch 没有负样本，对比损失恒为零；只在尾批为 1 时丢弃。
-        drop_last=len(train_indices) % args.batch_size == 1, **options,
+        drop_last=len(train_indices) % args.batch_size == 1, 
+        **options
     )
-    val_loader = create_eegtext_dataloader(Subset(dataset, val_indices), shuffle=False, **options)
+    val_loader = create_eegtext_dataloader(
+        Subset(dataset, val_indices), 
+        shuffle=False, 
+        **options
+    )
     return train_loader, val_loader, n_chans, sfreq
 
 
@@ -110,8 +120,11 @@ def train_epoch(model, loader, optimizer, device, args):
     total_loss, count = 0.0, 0
     for step, batch in enumerate(loader, 1):
         eeg = batch["eeg"].to(device, non_blocking=True) * args.eeg_scale
+        # 文本是字符串列表；分词后的张量由 TextEncoder 移到模型设备。
+        text = batch["text"]
         optimizer.zero_grad(set_to_none=True)
-        loss = model.compute_loss(eeg, batch["text"])["loss"]
+        outputs = model(eeg, text)
+        loss = model.contrastive_loss(outputs["eeg_embedding"], outputs["text_embedding"])
         if not torch.isfinite(loss):
             raise FloatingPointError(f"训练第 {step} 批出现非有限损失")
         loss.backward()
@@ -129,7 +142,6 @@ def train_epoch(model, loader, optimizer, device, args):
 @torch.no_grad()
 def validate(model, loader, device, args):
     """以整个验证集为候选库，分块计算双向对比损失和 Recall@1。
-
     正样本是数据集配对索引；相同文本的不同样本仍作为不同候选。
     向量保存在 CPU，避免一次分配完整 N×N 相似度矩阵。
     """
@@ -137,11 +149,12 @@ def validate(model, loader, device, args):
     eeg_features, text_features = [], []
     for batch in loader:
         eeg = batch["eeg"].to(device, non_blocking=True) * args.eeg_scale
-        outputs = model(eeg, batch["text"])
+        text = batch["text"]
+        outputs = model(eeg, text)
         eeg_features.append(outputs["eeg_embedding"].cpu())
         text_features.append(outputs["text_embedding"].cpu())
-    eeg_features = torch.cat(eeg_features)
-    text_features = torch.cat(text_features)
+    eeg_features = torch.cat(eeg_features) # (N, D)
+    text_features = torch.cat(text_features) # (N, D)
     count = len(eeg_features)
     loss_sum, hits = 0.0, []
     for queries, candidates in ((eeg_features, text_features), (text_features, eeg_features)):
@@ -157,7 +170,8 @@ def validate(model, loader, device, args):
         hits.append(correct / count)
     return {
         "val_loss": loss_sum / (2 * count),
-        "eeg_to_text_r1": hits[0], "text_to_eeg_r1": hits[1],
+        "eeg_to_text_r1": hits[0], 
+        "text_to_eeg_r1": hits[1],
     }
 
 
@@ -165,7 +179,6 @@ def main():
     args = parse_args()
     # 数据加载器使用相对 data/ 路径，统一以项目根目录为工作目录。
     args.output_dir = args.output_dir.resolve()
-    args.text_model = str(Path(args.text_model).resolve()) if Path(args.text_model).is_dir() else args.text_model
     os.chdir(PROJECT_ROOT)
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -179,33 +192,38 @@ def main():
     train_loader, val_loader, n_chans, sfreq = make_loaders(args, device)
     model = EEGTextModel(
         eeg_encoder=EEGEncoder(),
-        text_encoder=TextEncoder(
-            model_name=args.text_model,
-            max_length=args.text_max_length,
-        ),
+        text_encoder=TextEncoder(),
         projection_dim=args.projection_dim,
         projection_hidden_dim=args.projection_hidden_dim,
         freeze_text_encoder=not args.finetune_text,
         temperature=args.temperature,
     ).to(device)
+
+    # 给非文本编码器参数添加学习率组
     groups = [{
         "params": [p for name, p in model.named_parameters()
                    if p.requires_grad and not name.startswith("text_encoder.")],
         "lr": args.lr,
     }]
+    # 单独为文本编码器参数添加学习率组
     if args.finetune_text:
         groups.append({"params": list(model.text_encoder.parameters()), "lr": args.text_lr})
+    # 初始化优化器
     optimizer = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
 
     output_dir = args.output_dir / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     output_dir.mkdir(parents=True, exist_ok=False)
     config = {**vars(args), "output_dir": str(output_dir), "n_chans": n_chans, "sfreq": sfreq}
+    # 记录编码器实际采用的设置，便于回溯；这些字段不再由命令行传入。
+    config["text_model"] = model.text_encoder.tokenizer.name_or_path
+    config["text_max_length"] = model.text_encoder.max_length
     config["train_runs"] = [run for run in range(1, args.run_num + 1) if run not in args.val_runs]
     (output_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"device={device}, channels={n_chans}, sfreq={sfreq}", flush=True)
     print(f"train={len(train_loader.dataset)}, val={len(val_loader.dataset)}, val_runs={args.val_runs}")
     print(f"保存目录：{output_dir}", flush=True)
-    best_loss = math.inf
+    exit(0)
+    best_loss = math.inf # 正无穷大
     for epoch in range(1, args.epochs + 1):
         started = time.perf_counter()
         print(f"Epoch {epoch}/{args.epochs}", flush=True)
