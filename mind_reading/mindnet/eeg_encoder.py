@@ -65,6 +65,8 @@ class EEGEncoder(nn.Module):
         if attention_mask is None:
             # (B, 1, C, T) -> (B, k, 1, L) -> (B, k)
             return self.backbone(eeg.unsqueeze(1)).mean(dim=(-2, -1))
+
+        
         if attention_mask.shape != (eeg.shape[0], eeg.shape[-1]):
             raise ValueError("EEG attention_mask must have shape (B, T)")
         attention_mask = attention_mask.to(device=eeg.device)
