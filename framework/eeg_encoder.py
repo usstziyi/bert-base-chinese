@@ -15,23 +15,22 @@ class EEGEncoder(nn.Module):
     当前接口对补零后的完整时间轴池化，不接收有效长度掩码。
     """
 
-    def __init__(
-        self,
-        n_chans: int = 128,
-        n_times: int = 1500,
-        sfreq: float = 256,
-        F1: int = 8,
-        D: int = 2,
-        F2: int | None = None,
-        kernel_length: int = 64,
-        depthwise_kernel_length: int = 16,
-        pool1_kernel_size: int = 4,
-        pool2_kernel_size: int = 8,
-        pool_mode: str = "mean",
-        drop_prob: float = 0.25,
-        final_conv_length: str | int = "auto",
-    ):
+    def __init__(self):
         super().__init__()
+        n_chans=128
+        n_times=1500
+        sfreq=256
+        F1=8
+        D=2
+        F2=None
+        kernel_length=64
+        depthwise_kernel_length=16
+        pool1_kernel_size=4
+        pool2_kernel_size=8
+        pool_mode="mean"
+        drop_prob=0.25
+        final_conv_length="auto"
+
         self.n_chans = n_chans
         # EEGNet 对偶数卷积核补齐后会增加一个时间点。
         temporal_extra = int(kernel_length % 2 == 0)
@@ -71,6 +70,8 @@ class EEGEncoder(nn.Module):
             )
         if eeg.shape[-1] < self.min_samples:
             raise ValueError(f"EEG requires at least {self.min_samples} time samples")
+
+        
         features = self.backbone(eeg)  # (B, F2, 1, T')
         return features.mean(dim=(-2, -1)) # (B, self.feature_dim)=(B, F2)=(B, 16)
 

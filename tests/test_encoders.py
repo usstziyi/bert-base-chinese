@@ -18,7 +18,7 @@ def tokenize(texts, **kwargs):
     }
 
 
-def text_encoder(frozen):
+def text_encoder():
     bert = BertModel(BertConfig(
         vocab_size=12, hidden_size=16, num_hidden_layers=4,
         num_attention_heads=2, intermediate_size=32, output_hidden_states=True,
@@ -26,19 +26,19 @@ def text_encoder(frozen):
     with patch("framework.text_encoder.AutoModel.from_pretrained", return_value=bert), patch(
         "framework.text_encoder.AutoTokenizer.from_pretrained", return_value=tokenize
     ):
-        return TextEncoder(frozen=frozen)
+        return TextEncoder()
 
 
 class EncoderIntegrationTests(unittest.TestCase):
     def test_model_controls_freezing_and_infers_dimensions(self):
         eeg = EEGEncoder(n_chans=4, n_times=128)
-        text = text_encoder(True)
+        text = text_encoder()
         model = EEGTextModel(
             eeg, text, freeze_eeg_encoder=True, freeze_text_encoder=False,
         ).train()
         self.assertFalse(eeg.training)
         self.assertTrue(text.bert.training)
-        self.assertFalse(text.frozen)
+        self.assertTrue(all(p.requires_grad for p in text.parameters()))
         running_mean = eeg.backbone.bnorm_temporal.running_mean.clone()
         model.compute_loss(torch.randn(2, 4, 128), ["你好", "再见"])["loss"].backward()
         torch.testing.assert_close(eeg.backbone.bnorm_temporal.running_mean, running_mean)
@@ -49,11 +49,21 @@ class EncoderIntegrationTests(unittest.TestCase):
         self.assertTrue(all(p.requires_grad for p in eeg.parameters()))
         model.eval().train()
         self.assertTrue(eeg.training)
+        model.set_encoder_freeze(text, True)
+        model.eval().train()
+        self.assertFalse(text.bert.training)
+        self.assertTrue(all(not p.requires_grad for p in text.parameters()))
+        model.eval()
+        model.set_encoder_freeze(text, False)
+        self.assertFalse(text.bert.training)
+        self.assertTrue(all(p.requires_grad for p in text.parameters()))
+        model.train()
+        self.assertTrue(text.bert.training)
 
     def test_device_is_owned_by_caller(self):
         # 即使系统报告 GPU 可用，构造编码器也不能自行迁移设备。
         with patch("torch.cuda.is_available", return_value=True):
-            text = text_encoder(True)
+            text = text_encoder()
         self.assertEqual(text.device.type, "cpu")
         model = EEGTextModel(EEGEncoder(n_chans=4, n_times=128), text).to("cpu")
         self.assertTrue(all(p.device.type == "cpu" for p in model.parameters()))
@@ -72,7 +82,7 @@ class EncoderIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             eeg(torch.randn(2, 4, eeg.min_samples - 1))
         self.assertEqual(eeg(torch.randn(2, 4, eeg.min_samples)).shape, (2, eeg.feature_dim))
-        text = text_encoder(True)
+        text = text_encoder()
         with self.assertRaises(ValueError):
             EEGTextModel(eeg, text, temperature=0)
         with self.assertRaises(ValueError):
@@ -81,15 +91,18 @@ class EncoderIntegrationTests(unittest.TestCase):
     def test_multimodal_training_and_freezing(self):
         for frozen in (True, False):
             with self.subTest(frozen=frozen):
-                text = text_encoder(frozen)
+                text = text_encoder()
                 eeg = EEGEncoder(n_chans=4, n_times=128)
                 model = EEGTextModel(
                     eeg, text, eeg_feature_dim=eeg.feature_dim,
                     text_feature_dim=text.feature_dim, freeze_text_encoder=frozen,
-                ).train()
+                ).eval().train()
+                self.assertEqual(text.training, not frozen)
+                self.assertTrue(model.text_projection.training)
                 output = model.compute_loss(torch.randn(2, 4, 128), ["你好", "再见"])
                 self.assertEqual(output["eeg_feature"].shape, (2, eeg.feature_dim))
                 self.assertEqual(output["text_feature"].shape, (2, 16))
+                self.assertEqual(output["text_feature"].requires_grad, not frozen)
                 self.assertTrue(torch.isfinite(output["loss"]))
                 torch.testing.assert_close(output["eeg_embedding"].norm(dim=-1), torch.ones(2))
                 output["loss"].backward()
@@ -99,7 +112,7 @@ class EncoderIntegrationTests(unittest.TestCase):
                 self.assertEqual(text.bert.training, not frozen)
 
     def test_text_pooling_and_inference(self):
-        encoder = text_encoder(True)
+        encoder = text_encoder().eval()
         inputs = tokenize(["你好", "再见"])
         with torch.no_grad():
             hidden = encoder.bert(
@@ -112,9 +125,11 @@ class EncoderIntegrationTests(unittest.TestCase):
             encoder([])
 
     def test_external_freeze_and_eeg_shapes(self):
-        text = text_encoder(False)
+        text = text_encoder()
         text.requires_grad_(False).train()
-        self.assertFalse(text.bert.training)
+        self.assertTrue(text.bert.training)
+        text(**tokenize(["你好"]))
+        self.assertTrue(text.bert.training)
         eeg = EEGEncoder(n_chans=4, n_times=1500, F2=24).eval()
         for length in (1000, 1500):
             self.assertEqual(eeg(torch.randn(2, 4, length)).shape, (2, 24))

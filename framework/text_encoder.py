@@ -6,38 +6,19 @@ from transformers import AutoTokenizer, AutoModel
 
 
 class TextEncoder(nn.Module):
-    """BERT 句子编码器：取最后 4 层 hidden states 求平均，再按非特殊 token 做 mean pooling。"""
+    """BERT 句子编码器：平均最后 4 层并做 mean pooling；冻结和运行模式由调用方控制。"""
 
-    def __init__(
-        self,
-        model_name: str = "bert-base-chinese",
-        frozen: bool = True,
-        max_length: int = 512,
-    ):
+    def __init__(self):
         super().__init__()
-        self.max_length = max_length
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.bert = AutoModel.from_pretrained(model_name, output_hidden_states=True)
+        self.max_length = 512
+        self.tokenizer = AutoTokenizer.from_pretrained("bert-base-chinese")
+        self.bert = AutoModel.from_pretrained("bert-base-chinese", output_hidden_states=True)
         self.feature_dim = self.bert.config.hidden_size
-        if frozen:
-            self.bert.requires_grad_(False)
-            self.bert.eval()
-
-    @property
-    def frozen(self) -> bool:
-        return not any(param.requires_grad for param in self.bert.parameters())
 
     @property
     def device(self) -> torch.device:
         """随父模型 .to(...) 更新设备。"""
         return next(self.bert.parameters()).device
-
-    def train(self, mode: bool = True):
-        """父模型调用 .train() 时，保持冻结的 BERT 始终处于 eval 模式（不打开 dropout）。"""
-        super().train(mode)
-        if self.frozen:
-            self.bert.eval()
-        return self
 
     def forward(
         self,
@@ -84,20 +65,10 @@ class TextEncoder(nn.Module):
         attention_mask = attention_mask.to(self.device)
         special_tokens_mask = special_tokens_mask.to(self.device)
 
-        if self.frozen:
-            self.bert.eval()
-            # 冻结模型：不建计算图，省显存
-            with torch.no_grad():
-                outputs = self.bert(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                )
-        else:
-            # 不冻结模型：建计算图，开显存，开 dropout
-            outputs = self.bert(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-            )
+        outputs = self.bert(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+        )
 
         # (4, B, L, H)
         last_four = torch.stack(outputs.hidden_states[-4:], dim=0)

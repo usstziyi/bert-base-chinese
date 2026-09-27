@@ -183,7 +183,7 @@ def main():
     model = EEGTextModel(
         eeg_encoder=EEGEncoder(n_chans=n_chans, n_times=args.max_len, sfreq=sfreq),
         text_encoder=TextEncoder(
-            model_name=args.text_model, frozen=not args.finetune_text,
+            model_name=args.text_model,
             max_length=args.text_max_length,
         ),
         projection_dim=args.projection_dim,
