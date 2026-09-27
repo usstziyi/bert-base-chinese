@@ -123,7 +123,8 @@ def train_epoch(model, loader, optimizer, device, args):
         # 文本是字符串列表；分词后的张量由 TextEncoder 移到模型设备。
         text = batch["text"]
         optimizer.zero_grad(set_to_none=True)
-        outputs = model(eeg, text)
+        eeg_mask = batch["attention_mask"].to(device, non_blocking=True)
+        outputs = model(eeg, text, eeg_attention_mask=eeg_mask)
         loss = model.contrastive_loss(outputs["eeg_embedding"], outputs["text_embedding"])
         if not torch.isfinite(loss):
             raise FloatingPointError(f"训练第 {step} 批出现非有限损失")
@@ -151,7 +152,8 @@ def validate(model, loader, device, args):
     for batch in loader:
         eeg = batch["eeg"].to(device, non_blocking=True) * args.eeg_scale
         text = batch["text"]
-        outputs = model(eeg, text)
+        eeg_mask = batch["attention_mask"].to(device, non_blocking=True)
+        outputs = model(eeg, text, eeg_attention_mask=eeg_mask)
         eeg_features.append(outputs["eeg_embedding"].cpu())
         text_features.append(outputs["text_embedding"].cpu())
     eeg_features = torch.cat(eeg_features) # (N, D)

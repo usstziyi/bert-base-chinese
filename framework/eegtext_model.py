@@ -140,7 +140,7 @@ class EEGTextModel(nn.Module):
     # EEG branch
     # ========================================================
 
-    def encode_eeg(self, eeg):
+    def encode_eeg(self, eeg, eeg_attention_mask=None):
         """
         eeg:
             (B, C, T)
@@ -150,7 +150,10 @@ class EEGTextModel(nn.Module):
             eeg_embedding: 投影 + normalize 后的输出
         """
 
-        eeg_feature = self.eeg_encoder(eeg)
+        if eeg_attention_mask is None:
+            eeg_feature = self.eeg_encoder(eeg)
+        else:
+            eeg_feature = self.eeg_encoder(eeg, attention_mask=eeg_attention_mask)
 
         # 如果 EEG encoder 输出还有额外维度：
         #
@@ -202,8 +205,8 @@ class EEGTextModel(nn.Module):
     # Forward
     # ========================================================
 
-    def forward(self, eeg, text):
-        eeg_feature, eeg_embedding = self.encode_eeg(eeg)
+    def forward(self, eeg, text, eeg_attention_mask=None):
+        eeg_feature, eeg_embedding = self.encode_eeg(eeg, eeg_attention_mask)
         text_feature, text_embedding = self.encode_text(text)
 
         return {
