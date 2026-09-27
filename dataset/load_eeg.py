@@ -1,7 +1,6 @@
 import os
 import mne
 import pandas as pd
-from pathlib import Path
 
 ChineseEEG_ROOT = "data/ChineseEEG"
 EEG_PREPROC_DIR = os.path.join(ChineseEEG_ROOT, "derivatives", "preproc")
@@ -118,17 +117,21 @@ if __name__ == "__main__":
     print("Loading EEG data for LittlePrince...")
     eeg_data = load_eeg(novel_name="LittlePrince", run_num=7, subject="sub-04", filtered="filtered_0.5_30")
     print(len(eeg_data))
-    for run_eeg_data in eeg_data:
+    for i,run_eeg_data in enumerate(eeg_data):
         # print(run_eeg_data["info"])
         # print(run_eeg_data["sfreq"])
-        print(len(run_eeg_data["eeg_segments"]))
+        print(f"Run {i+1}: {len(run_eeg_data['eeg_segments'])}")
+        for j, eeg in enumerate(run_eeg_data["eeg_segments"]):
+            print(f"run {i+1},eeg {j}: {eeg.shape}")
+        exit(0)
 
-    print("Loading EEG data for GarnettDream...")
-    eeg_data = load_eeg(novel_name="GarnettDream", run_num=18, subject="sub-04", filtered="filtered_0.5_30")
-    print(len(eeg_data))
-    for run_eeg_data in eeg_data:
-        # print(run_eeg_data["info"])
-        # print(run_eeg_data["sfreq"])
-        print(len(run_eeg_data["eeg_segments"]))
+
+    # print("Loading EEG data for GarnettDream...")
+    # eeg_data = load_eeg(novel_name="GarnettDream", run_num=18, subject="sub-04", filtered="filtered_0.5_30")
+    # print(len(eeg_data))
+    # for run_eeg_data in eeg_data:
+    #     # print(run_eeg_data["info"])
+    #     # print(run_eeg_data["sfreq"])
+    #     print(len(run_eeg_data["eeg_segments"]))
 
        

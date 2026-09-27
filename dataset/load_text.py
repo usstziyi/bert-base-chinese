@@ -1,9 +1,7 @@
-from transformers import AutoTokenizer, AutoModel
 import openpyxl
 import os
-import numpy as np
-import torch
-import argparse
+
+
 
 # 数据集根目录：
 ChineseEEG_ROOT = "data/ChineseEEG"
