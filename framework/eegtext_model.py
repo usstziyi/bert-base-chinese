@@ -41,14 +41,14 @@ class EEGTextModel(nn.Module):
         -> eeg_encoder
         -> eeg_projection
         -> normalize
-        -> z_eeg
+        -> eeg_embedding/z_eeg
 
     Text:
         text
         -> text_encoder
         -> text_projection
         -> normalize
-        -> z_text
+        -> text_embedding/z_text
     """
 
     def __init__(
@@ -70,7 +70,7 @@ class EEGTextModel(nn.Module):
         super().__init__()
         if not math.isfinite(temperature) or temperature <= 0:
             raise ValueError("temperature must be finite and positive")
-            
+
         eeg_feature_dim = self._feature_dim(eeg_encoder, eeg_feature_dim)
         text_feature_dim = self._feature_dim(text_encoder, text_feature_dim)
 
@@ -107,11 +107,12 @@ class EEGTextModel(nn.Module):
         # 4. Freeze encoders
         # ====================================================
 
-        self.set_encoder_trainable("eeg", not freeze_eeg_encoder)
-        self.set_encoder_trainable("text", not freeze_text_encoder)
+        self.set_encoder_freeze(self.eeg_encoder, freeze_eeg_encoder)
+        self.set_encoder_freeze(self.text_encoder, freeze_text_encoder)
 
     @staticmethod
-    def _feature_dim(encoder, explicit_dim):
+    def _feature_dim(encoder: nn.Module, explicit_dim: int | None = None) -> int:
+        """根据 encoder 的 feature_dim 或 explicit_dim 推理 feature_dim。"""
         inferred_dim = getattr(encoder, "feature_dim", None)
         if explicit_dim is not None and inferred_dim is not None and explicit_dim != inferred_dim:
             raise ValueError("Explicit feature dimension does not match encoder.feature_dim")
@@ -120,16 +121,16 @@ class EEGTextModel(nn.Module):
             raise ValueError("Provide a positive feature dimension or encoder.feature_dim")
         return dimension
 
-    def set_encoder_trainable(self, modality: str, trainable: bool):
-        """统一设置梯度及训练模式；投影头始终独立训练。"""
-        if modality not in ("eeg", "text"):
-            raise ValueError("modality must be 'eeg' or 'text'")
-        encoder = getattr(self, f"{modality}_encoder")
-        encoder.requires_grad_(trainable)
-        encoder.train(self.training if trainable else False)
+    def set_encoder_freeze(self, encoder: nn.Module, freeze: bool):
+        """freeze=True 冻结编码器并进入 eval；
+           freeze=False 解冻并跟随主模型模式。"""
+        encoder.requires_grad_(not freeze) # 冻结参数/解冻参数
+        encoder.train(False if freeze else self.training) # eval/跟随主模型模式
 
     def train(self, mode: bool = True):
-        super().train(mode)
+        """管理子网络的train/eval模式，不会修改参数的冻结状态。"""
+        super().train(mode) # 主模型进入 train/eval 模式
+        # 被冻结的编码器进入 eval 模式
         for encoder in (self.eeg_encoder, self.text_encoder):
             if not any(param.requires_grad for param in encoder.parameters()):
                 encoder.eval()
@@ -202,9 +203,7 @@ class EEGTextModel(nn.Module):
     # ========================================================
 
     def forward(self, eeg, text):
-
         eeg_feature, eeg_embedding = self.encode_eeg(eeg)
-
         text_feature, text_embedding = self.encode_text(text)
 
         return {
@@ -226,21 +225,14 @@ class EEGTextModel(nn.Module):
     ):
         """
         CLIP-style symmetric contrastive loss.
-
         eeg_embedding:
             (B, D)
-
         text_embedding:
             (B, D)
+        cosine similarity
+        因为前面已经 normalize：
+        z1 @ z2.T == cosine similarit
         """
-
-        # --------------------------------------------
-        # cosine similarity
-        #
-        # 因为前面已经 normalize：
-        #
-        # z1 @ z2.T == cosine similarity
-        # --------------------------------------------
 
         if (
             eeg_embedding.ndim != 2
@@ -249,34 +241,15 @@ class EEGTextModel(nn.Module):
             or eeg_embedding.shape[0] == 0
         ):
             raise ValueError("Embeddings must have the same non-empty (B, D) shape")
-        logits = (
-            eeg_embedding @ text_embedding.T
-        ) / self.temperature
-
+        logits = (eeg_embedding @ text_embedding.T) / self.temperature
         batch_size = eeg_embedding.size(0)
-
-        labels = torch.arange(
-            batch_size,
-            device=eeg_embedding.device
-        )
-
+        labels = torch.arange(batch_size, device=eeg_embedding.device)
         # EEG -> Text
-        loss_eeg_to_text = F.cross_entropy(
-            logits,
-            labels
-        )
-
+        loss_eeg_to_text = F.cross_entropy(logits, labels)
         # Text -> EEG
-        loss_text_to_eeg = F.cross_entropy(
-            logits.T,
-            labels
-        )
-
-        loss = (
-            loss_eeg_to_text
-            + loss_text_to_eeg
-        ) / 2
-
+        loss_text_to_eeg = F.cross_entropy(logits.T, labels)
+        # 计算 EEG 与文本之间的双向对比损失
+        loss = (loss_eeg_to_text + loss_text_to_eeg) / 2
         return loss
 
     # ========================================================

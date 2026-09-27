@@ -44,7 +44,7 @@ class EncoderIntegrationTests(unittest.TestCase):
         torch.testing.assert_close(eeg.backbone.bnorm_temporal.running_mean, running_mean)
         self.assertTrue(all(p.grad is None for p in eeg.parameters()))
         self.assertTrue(any(p.grad is not None for p in text.parameters()))
-        model.set_encoder_trainable("eeg", True)
+        model.set_encoder_freeze(model.eeg_encoder, False)
         self.assertTrue(eeg.training)
         self.assertTrue(all(p.requires_grad for p in eeg.parameters()))
         model.eval().train()
