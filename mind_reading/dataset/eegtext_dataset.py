@@ -95,13 +95,11 @@ class ChineseEEGDataset(Dataset):
             eeg_segment,
             dtype=self.dtype,
         )
-        eeg_length = eeg.shape[1]
 
         text = self.text_data[run_idx][segment_idx]
 
         return {
             "eeg": eeg,
-            "eeg_length": eeg_length,
             "text": text,
             "novel_name": self.novel_name,
             "run_idx": run_idx,
@@ -110,9 +108,3 @@ class ChineseEEGDataset(Dataset):
             "sfreq": float(run_eeg["sfreq"]),
         }
 
-
-def main():
-    print("hello,world")
-
-if __name__ == "__main__":
-    main()

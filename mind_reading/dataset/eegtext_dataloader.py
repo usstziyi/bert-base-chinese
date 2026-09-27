@@ -12,8 +12,8 @@ def eeg_text_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     if len(batch) == 0:
         raise ValueError("batch must not be empty")
 
-    # (B,) 原始有效长度
-    lengths = torch.tensor([sample["eeg_length"] for sample in batch], dtype=torch.long)
+    # (B,) 原始有效长度，补零前由每个样本的时间维取得
+    lengths = torch.tensor([sample["eeg"].shape[1] for sample in batch], dtype=torch.long)
     # (C, T) → (T, C)，按 batch 最大长度补零，再恢复 (B, C, T_max)。
     eeg = pad_sequence(
         [sample["eeg"].transpose(0, 1) for sample in batch],
@@ -29,8 +29,7 @@ def eeg_text_collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
 
     return {
         "eeg": eeg, #(B, C, T_max)
-        "eeg_lengths": lengths, # EEG 原始有效长度 (B,)
-        "attention_mask": attention_mask, #(B, max_len)
+        "attention_mask": attention_mask, #(B, max_len)，eeg原始长度可由 sum(dim=-1) 还原
         "text": [sample["text"] for sample in batch],
         "novel_name": [sample["novel_name"] for sample in batch],
         "run_idx": torch.tensor([sample["run_idx"] for sample in batch], dtype=torch.long),

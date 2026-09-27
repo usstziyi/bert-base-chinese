@@ -38,7 +38,7 @@ class EEGEncoder(nn.Module):
         self.min_samples = max(
             1, pool1_kernel_size * max(1, pool2_kernel_size - depthwise_extra)
             - temporal_extra,
-        )
+        ) # 27
         self.feature_dim = F1 * D if F2 is None else F2 # 16
         eegnet = EEGNet(
             n_chans=n_chans,
@@ -69,9 +69,7 @@ class EEGEncoder(nn.Module):
             torch.arange(features.shape[-1], device=features.device)[None, :] < lengths[:, None]
         )[:, None, None, :]
 
-    def forward(
-        self, eeg: torch.Tensor, attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
+    def forward(self, eeg: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:
         if eeg.ndim != 3 or eeg.shape[1] != self.n_chans:
             raise ValueError(
                 f"Expected EEG shape (B, {self.n_chans}, T), got {tuple(eeg.shape)}"
@@ -86,12 +84,13 @@ class EEGEncoder(nn.Module):
         if attention_mask.shape != (eeg.shape[0], eeg.shape[-1]):
             raise ValueError("EEG attention_mask must have shape (B, T)")
         attention_mask = attention_mask.to(device=eeg.device)
+        
         if not torch.all((attention_mask == 0) | (attention_mask == 1)):
             raise ValueError("EEG attention_mask must contain only 0 or 1")
             
         attention_mask = attention_mask.bool()
-        lengths = attention_mask.sum(dim=-1)
-        expected = torch.arange(eeg.shape[-1], device=eeg.device)[None, :] < lengths[:, None]
+        lengths = attention_mask.sum(dim=-1) # (B,)每个EEG样本有效时间点数
+        expected = torch.arange(eeg.shape[-1], device=eeg.device)[None, :] < lengths[:, None] # (B, T)
         if not torch.equal(attention_mask, expected):
             raise ValueError("EEG attention_mask must describe contiguous valid samples followed by right padding")
         if torch.any(lengths < self.min_samples):

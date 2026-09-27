@@ -23,7 +23,7 @@ class EEGTextDataLoaderTests(unittest.TestCase):
         self.assertEqual(batch["eeg"].shape, (2, 2, 1601))
         self.assertEqual(batch["text"], ["句子1", "句子0"])
         self.assertEqual(batch["segment_idx"].tolist(), [1, 0])
-        self.assertEqual(batch["eeg_lengths"].tolist(), [1601, 2])
+        self.assertEqual(batch["attention_mask"].sum(dim=-1).tolist(), [1601, 2])
         self.assertEqual(batch["attention_mask"].tolist(),
                          [[True] * 1601, [True, True] + [False] * 1599])
         torch.testing.assert_close(batch["eeg"][0], samples[1]["eeg"])
@@ -31,7 +31,7 @@ class EEGTextDataLoaderTests(unittest.TestCase):
         torch.testing.assert_close(batch["eeg"][1, :, 2:], torch.zeros(2, 1599))
         self.assertEqual(batches[1]["text"], ["句子2"])
         self.assertEqual(batches[1]["eeg"].shape, (1, 2, 3))
-        self.assertEqual(batches[1]["eeg_lengths"].tolist(), [3])
+        self.assertEqual(batches[1]["attention_mask"].sum(dim=-1).tolist(), [3])
         self.assertTrue(batches[1]["attention_mask"].all())
 
 

@@ -43,11 +43,11 @@ if __name__ == "__main__":
         for i, batch in enumerate(loader):
             print(f"{split} batch {i}: eeg={tuple(batch['eeg'].shape)}, text={len(batch['text'])}")
 
-    # batch 是 collate 后的 dict；单样本原始形状由 eeg_lengths 还原为 (C, T_i)。
+    # batch 是 collate 后的 dict；单样本原始形状由 attention_mask 还原为 (C, T_i)。
     for batch in train_loader:
         n_channels = batch["eeg"].shape[1]
         print(batch["eeg"].shape)
-        for i, length in enumerate(batch["eeg_lengths"]):
+        for i, length in enumerate(batch["attention_mask"].sum(dim=-1)):
             print(f"train sample {i}: eeg=({n_channels}, {int(length)}) -> {batch["eeg"].shape[-1]}")
         break
 
