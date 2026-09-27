@@ -146,16 +146,17 @@ def validate(model, loader, device, args):
     """
     model.eval()
     eeg_features, text_features = [], []
-    for batch in loader:
+    for i, batch in enumerate(loader):
         eeg = batch["eeg"].to(device, non_blocking=True) * args.eeg_scale
         text = batch["text"]
         eeg_mask = batch["attention_mask"].to(device, non_blocking=True)
         outputs = model(eeg, text, eeg_attention_mask=eeg_mask)
         eeg_features.append(outputs["eeg_embedding"].cpu())
         text_features.append(outputs["text_embedding"].cpu())
+        print(f"val step {i}/{len(loader)}")
     eeg_features = torch.cat(eeg_features) # (N, D)
     text_features = torch.cat(text_features) # (N, D)
-    count = len(eeg_features)
+    count = len(eeg_features) # N
     loss_sum, hits = 0.0, []
     for queries, candidates in ((eeg_features, text_features), (text_features, eeg_features)):
         correct = 0
@@ -166,6 +167,8 @@ def validate(model, loader, device, args):
                 raise FloatingPointError("验证相似度出现非有限值")
             labels = torch.arange(start, end)
             loss_sum += F.cross_entropy(logits, labels, reduction="sum").item()
+            # print(logits.argmax(dim=1))
+            # print(labels)
             correct += (logits.argmax(dim=1) == labels).sum().item()
         hits.append(correct / count)
     return {
