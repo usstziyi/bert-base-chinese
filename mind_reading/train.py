@@ -40,7 +40,10 @@ def parse_args():
     parser.add_argument("--weight-decay", type=float, default=1e-2)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--eeg-scale", type=float, default=1e6, help="MNE 的 V 转为 μV；推理须保持一致")
-    parser.add_argument("--finetune-text", action="store_true", help="开启 BERT 微调")
+    parser.add_argument("--freeze-text-encoder", action=argparse.BooleanOptionalAction, default=True,
+                        help="冻结 BERT（默认冻结，用 --no-freeze-text-encoder 解冻）")
+    parser.add_argument("--freeze-eeg-encoder", action=argparse.BooleanOptionalAction, default=False,
+                        help="冻结 EEG 编码器（默认不冻结）")
     parser.add_argument("--projection-dim", type=int, default=256)
     parser.add_argument("--projection-hidden-dim", type=int, default=512)
     parser.add_argument("--temperature", type=float, default=0.07)
@@ -180,6 +183,9 @@ def validate(model, loader, device, args):
 
 def main():
     args = parse_args()
+    print(f"freeze_text_encoder={args.freeze_text_encoder}")
+    print(f"freeze_eeg_encoder={args.freeze_eeg_encoder}")
+
     # 数据加载器使用相对 data/ 路径，统一以项目根目录为工作目录。
     args.output_dir = args.output_dir.resolve()
     random.seed(args.seed)
@@ -195,9 +201,10 @@ def main():
     model = EEGTextModel(
         eeg_encoder=EEGEncoder(),
         text_encoder=TextEncoder(),
+        freeze_text_encoder=args.freeze_text_encoder,
+        freeze_eeg_encoder=args.freeze_eeg_encoder,
         projection_dim=args.projection_dim,
         projection_hidden_dim=args.projection_hidden_dim,
-        freeze_text_encoder=not args.finetune_text,
         temperature=args.temperature,
     ).to(device)
 
@@ -208,7 +215,7 @@ def main():
         "lr": args.lr,
     }]
     # 单独为文本编码器参数添加学习率组
-    if args.finetune_text:
+    if not args.freeze_text_encoder:
         groups.append({"params": list(model.text_encoder.parameters()), "lr": args.text_lr})
     # 初始化优化器
     optimizer = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
@@ -230,14 +237,24 @@ def main():
         started = time.perf_counter()
         print(f"Epoch {epoch}/{args.epochs}", flush=True)
         train_loss = train_epoch(model, train_loader, optimizer, device, args)
-        metrics = {"epoch": epoch, "train_loss": train_loss, **validate(model, val_loader, device, args)}
-        metrics["seconds"] = time.perf_counter() - started
+        val_loss, eeg_to_text_r1, text_to_eeg_r1 = validate(model, val_loader, device, args)
+        metrics = {
+            "epoch": epoch, 
+            "train_loss": train_loss, 
+            "val_loss": val_loss,
+            "eeg_to_text_r1": eeg_to_text_r1,
+            "text_to_eeg_r1": text_to_eeg_r1,
+            "seconds": time.perf_counter() - started,
+        }
         improved = metrics["val_loss"] < best_loss
         best_loss = min(best_loss, metrics["val_loss"])
         checkpoint = {
-            "epoch": epoch, "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(), "config": config,
-            "metrics": metrics, "best_val_loss": best_loss,
+            "epoch": epoch, 
+            "model_state_dict": model.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(), 
+            "config": config,
+            "metrics": metrics, 
+            "best_val_loss": best_loss,
         }
         for name in (["last.pt", "best.pt"] if improved else ["last.pt"]):
             temporary = output_dir / f"{name}.tmp"
