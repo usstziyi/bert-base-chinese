@@ -220,10 +220,10 @@ def main():
     # 初始化优化器
     optimizer = torch.optim.AdamW(groups, weight_decay=args.weight_decay)
 
+    # config.json
     output_dir = args.output_dir / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     output_dir.mkdir(parents=True, exist_ok=False)
     config = {**vars(args), "output_dir": str(output_dir), "n_chans": n_chans, "sfreq": sfreq}
-    # 记录编码器实际采用的设置，便于回溯；这些字段不再由命令行传入。
     config["text_model"] = model.text_encoder.tokenizer.name_or_path
     config["text_max_length"] = model.text_encoder.max_length
     config["train_runs"] = [run for run in range(1, args.run_num + 1) if run not in args.val_runs]
@@ -260,6 +260,8 @@ def main():
             temporary = output_dir / f"{name}.tmp"
             torch.save(checkpoint, temporary)
             temporary.replace(output_dir / name)
+            
+        # history.jsonl
         with (output_dir / "history.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(metrics, ensure_ascii=False) + "\n")
         print(
