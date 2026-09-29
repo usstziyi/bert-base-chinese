@@ -11,7 +11,7 @@ from mindnet.eegtext_model import EEGTextModel
 class EEGPaddingMaskTests(unittest.TestCase):
     def setUp(self):
         torch.manual_seed(7)
-        self.encoder = EEGEncoder()
+        self.encoder = EEGEncoder(drop_prob=0)
 
     def test_eval_matches_unpadded_samples(self):
         encoder = self.encoder.eval()
@@ -26,13 +26,9 @@ class EEGPaddingMaskTests(unittest.TestCase):
             ])
         torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-4)
 
-    def test_training_padding_does_not_change_statistics_or_gradients(self):
-        # 双精度避免不同卷积长度下 float32 累加误差影响接近零的 BN 前偏置梯度。
+    def test_training_padding_does_not_change_outputs_or_gradients(self):
+        # 双精度降低不同序列长度下的浮点累加误差。
         encoder = self.encoder.double().train()
-        # Dropout 的随机采样随张量形状变化；此处关闭它来单独验证 padding。
-        for layer in encoder.modules():
-            if isinstance(layer, nn.Dropout):
-                layer.p = 0
         other = copy.deepcopy(encoder)
         lengths = torch.tensor([86, 97])
         eeg = torch.randn(2, encoder.n_chans, 97, dtype=torch.float64, requires_grad=True)
@@ -68,29 +64,51 @@ class EEGPaddingMaskTests(unittest.TestCase):
             with self.subTest(shape=invalid.shape), self.assertRaises(ValueError):
                 self.encoder(eeg, invalid)
 
-    def test_tsconv_lengths_and_default_training_shape(self):
+    def test_transformer_lengths_and_all_valid_masks(self):
         encoder = self.encoder.eval()
-        for length in (75, 79, 80, 250, 1500):
+        for length in (1, 2, 75, 250, 1500):
             with self.subTest(length=length), torch.no_grad():
                 eeg = torch.randn(2, 128, length)
-                features = encoder.backbone(eeg.unsqueeze(1))
-                self.assertEqual(features.shape, (2, 40, 1, (length - 75) // 5 + 1))
-                torch.testing.assert_close(encoder(eeg), features.mean(dim=(-2, -1)))
+                self.assertEqual(encoder(eeg).shape, (2, 40))
                 torch.testing.assert_close(encoder(eeg, torch.ones(2, length)), encoder(eeg))
 
-    def test_invalid_hyperparameters_and_short_masked_sample(self):
-        for options in ({"k": 0}, {"m1": -1}, {"m2": 0}, {"s": 0},
-                        {"n_chans": 0}, {"s": 1.5}, {"drop_prob": 1.1}):
+    def test_invalid_hyperparameters_and_empty_masked_sample(self):
+        for options in ({"k": 0}, {"nhead": 0}, {"num_layers": 0},
+                        {"dim_feedforward": -1}, {"k": 7, "nhead": 2},
+                        {"n_chans": 0}, {"num_layers": 1.5}, {"drop_prob": 1.1}):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 EEGEncoder(**options)
         eeg = torch.randn(2, 128, 96)
-        mask = torch.arange(96)[None, :] < torch.tensor([74, 96])[:, None]
+        mask = torch.arange(96)[None, :] < torch.tensor([0, 96])[:, None]
         with self.assertRaises(ValueError):
             self.encoder(eeg, mask)
         invalid = torch.ones(2, 96)
         invalid[0, 0] = 0.5
         with self.assertRaises(ValueError):
             self.encoder(eeg, invalid)
+
+    def test_nonfinite_padding_is_ignored_in_forward_and_backward(self):
+        eeg = torch.randn(2, 128, 9)
+        mask = torch.arange(9)[None, :] < torch.tensor([1, 5])[:, None]
+        reference = self.encoder(eeg, mask).detach()
+        for value in (float("nan"), float("inf")):
+            padded = eeg.masked_fill(~mask[:, None, :], value).requires_grad_()
+            self.encoder.zero_grad(set_to_none=True)
+            actual = self.encoder(padded, mask)
+            torch.testing.assert_close(actual, reference)
+            actual.square().sum().backward()
+            self.assertTrue(torch.isfinite(padded.grad).all())
+            self.assertEqual(padded.grad.masked_select(~mask[:, None, :]).count_nonzero().item(), 0)
+            self.assertTrue(all(torch.isfinite(p.grad).all() for p in self.encoder.parameters()))
+
+    def test_temporal_order_matters_and_odd_feature_dimension_is_supported(self):
+        encoder = EEGEncoder(n_chans=4, k=9, nhead=3, drop_prob=0).eval()
+        eeg = torch.randn(2, 4, 12)
+        with torch.no_grad():
+            output = encoder(eeg)
+            reversed_output = encoder(eeg.flip(-1))
+        self.assertEqual(output.shape, (2, 9))
+        self.assertFalse(torch.allclose(output, reversed_output))
 
 
 if __name__ == "__main__":

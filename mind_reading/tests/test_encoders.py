@@ -39,10 +39,10 @@ class EncoderIntegrationTests(unittest.TestCase):
         self.assertFalse(eeg.training)
         self.assertTrue(text.bert.training)
         self.assertTrue(all(p.requires_grad for p in text.parameters()))
-        running_mean = eeg.backbone.bnorm_temporal.running_mean.clone()
+        frozen_weights = eeg.input_projection.weight.detach().clone()
         output = model(torch.randn(2, 4, 128), ["你好", "再见"])
         model.contrastive_loss(output["eeg_embedding"], output["text_embedding"]).backward()
-        torch.testing.assert_close(eeg.backbone.bnorm_temporal.running_mean, running_mean)
+        torch.testing.assert_close(eeg.input_projection.weight, frozen_weights)
         self.assertTrue(all(p.grad is None for p in eeg.parameters()))
         self.assertTrue(any(p.grad is not None for p in text.parameters()))
         model.set_encoder_freeze(model.eeg_encoder, False)
@@ -77,9 +77,9 @@ class EncoderIntegrationTests(unittest.TestCase):
             model.to("cpu")
             self.assertEqual(text.device.type, "cpu")
 
-    def test_custom_pooling_and_invalid_configuration(self):
+    def test_custom_transformer_and_invalid_configuration(self):
         eeg = EEGEncoder(
-            n_chans=4, m1=15, m2=31, s=3,
+            n_chans=4, k=24, nhead=3, num_layers=1, dim_feedforward=48,
         ).eval()
         with self.assertRaises(ValueError):
             eeg(torch.randn(2, 4, eeg.min_samples - 1))
@@ -110,7 +110,8 @@ class EncoderIntegrationTests(unittest.TestCase):
                 self.assertTrue(torch.isfinite(loss))
                 torch.testing.assert_close(output["eeg_embedding"].norm(dim=-1), torch.ones(2))
                 loss.backward()
-                self.assertIsNotNone(eeg.backbone.conv_temporal.weight.grad)
+                self.assertIsNotNone(eeg.input_projection.weight.grad)
+                self.assertIsNotNone(eeg.transformer.layers[0].self_attn.in_proj_weight.grad)
                 self.assertIsNotNone(model.text_projection.projection[0].weight.grad)
                 self.assertEqual(any(p.grad is not None for p in text.bert.parameters()), not frozen)
                 self.assertEqual(text.bert.training, not frozen)

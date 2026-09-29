@@ -4,7 +4,7 @@ from unittest.mock import patch
 import torch
 from torch import nn
 
-from framework.eegtext_model import EEGTextModel
+from mindnet.eegtext_model import EEGTextModel
 
 
 class ModelLossTests(unittest.TestCase):
