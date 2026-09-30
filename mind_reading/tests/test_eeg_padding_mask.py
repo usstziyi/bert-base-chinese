@@ -4,8 +4,8 @@ import unittest
 import torch
 from torch import nn
 
-from mindnet.eeg_encoder import EEGEncoder
-from mindnet.eegtext_model import EEGTextModel
+from mind_reading.mindnet.eeg_encoder import EEGEncoder
+from mind_reading.mindnet.eegtext_model import EEGTextModel
 
 
 class EEGPaddingMaskTests(unittest.TestCase):
@@ -69,12 +69,12 @@ class EEGPaddingMaskTests(unittest.TestCase):
         for length in (1, 2, 75, 250, 1500):
             with self.subTest(length=length), torch.no_grad():
                 eeg = torch.randn(2, 128, length)
-                self.assertEqual(encoder(eeg).shape, (2, 40))
+                self.assertEqual(encoder(eeg).shape, (2, encoder.feature_dim))
                 torch.testing.assert_close(encoder(eeg, torch.ones(2, length)), encoder(eeg))
 
     def test_invalid_hyperparameters_and_empty_masked_sample(self):
-        for options in ({"k": 0}, {"nhead": 0}, {"num_layers": 0},
-                        {"dim_feedforward": -1}, {"k": 7, "nhead": 2},
+        for options in ({"d_model": 0}, {"nhead": 0}, {"num_layers": 0},
+                        {"dim_feedforward": -1}, {"d_model": 7, "nhead": 2},
                         {"n_chans": 0}, {"num_layers": 1.5}, {"drop_prob": 1.1}):
             with self.subTest(options=options), self.assertRaises(ValueError):
                 EEGEncoder(**options)
@@ -102,7 +102,7 @@ class EEGPaddingMaskTests(unittest.TestCase):
             self.assertTrue(all(torch.isfinite(p.grad).all() for p in self.encoder.parameters()))
 
     def test_temporal_order_matters_and_odd_feature_dimension_is_supported(self):
-        encoder = EEGEncoder(n_chans=4, k=9, nhead=3, drop_prob=0).eval()
+        encoder = EEGEncoder(n_chans=4, d_model=9, nhead=3, drop_prob=0).eval()
         eeg = torch.randn(2, 4, 12)
         with torch.no_grad():
             output = encoder(eeg)

@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader, Dataset
 
 
 def eeg_text_collate_fn(batch):
-    """堆叠固定长度 EEG，并汇总文本与字符位置信息。"""
+    """堆叠 EEG，保留全部配对；word_id 是全 Dataset 一致的字词标签。"""
     if not batch:
         raise ValueError('batch must not be empty')
     shape = batch[0]['eeg'].shape
@@ -18,9 +18,10 @@ def eeg_text_collate_fn(batch):
     }
     for key in ('text', 'novel_name', 'subject'):
         output[key] = [s[key] for s in batch]
-    for key in ('run_idx', 'run_num', 'row_num', 'row_idx', 'char_idx', 'n_chars'):
+    for key in ('word_id', 'run_idx', 'run_num', 'row_num', 'row_idx', 'char_idx', 'n_chars'):
         output[key] = torch.tensor([s[key] for s in batch], dtype=torch.long)
     output['is_chapter'] = torch.tensor([s['is_chapter'] for s in batch], dtype=torch.bool)
+    output['is_padding'] = torch.tensor([s['is_padding'] for s in batch], dtype=torch.bool)
     return output
 
 

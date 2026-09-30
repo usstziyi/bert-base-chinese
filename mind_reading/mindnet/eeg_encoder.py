@@ -69,7 +69,7 @@ class EEGEncoder(nn.Module):
 
     @staticmethod
     def _position_encoding(tokens: torch.Tensor) -> torch.Tensor:
-        """动态生成位置编码，不限制最大长度；要求 dimension 为偶数，兼容混合精度。"""
+        """动态生成位置编码，不限制最大长度；支持奇偶维度及混合精度。"""
         length, dimension = tokens.shape[1:]
         dtype = torch.float64 if tokens.dtype == torch.float64 else torch.float32
         positions = torch.arange(length, device=tokens.device, dtype=dtype)[:, None] # (T,1)
@@ -80,7 +80,7 @@ class EEGEncoder(nn.Module):
         angles = positions * frequencies # (T, K)，K = d/2
         encoding = torch.empty(length, dimension, device=tokens.device, dtype=dtype)
         encoding[:, 0::2] = angles.sin()
-        encoding[:, 1::2] = angles.cos()
+        encoding[:, 1::2] = angles[:, :dimension // 2].cos()
         return encoding.to(dtype=tokens.dtype)
 
     def forward(self, eeg: torch.Tensor, attention_mask: torch.Tensor | None = None) -> torch.Tensor:

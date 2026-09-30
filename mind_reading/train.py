@@ -1,7 +1,8 @@
 """EEG–文本对比学习入口。
 
-在项目根目录运行：python -m train.train --epochs 30 --batch-size 32
-也支持直接运行 train/train.py。默认将最后一个 run 留作验证集。
+在项目根目录运行：python -m mind_reading.train --epochs 30 --batch-size 32
+也支持直接运行 mind_reading/train.py。默认将最后一个 run 留作验证集。
+保留重复字词样本，同 word_id 的全部跨模态候选均为正样本。
 编码器结构、BERT 模型和文本最大长度由各 encoder 内部定义。
 """
 
@@ -17,12 +18,15 @@ from datetime import datetime
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from torch.utils.data import Subset
 
 
-from dataset import ChineseEEGDataset, create_eegtext_dataloader
-from mindnet import EEGEncoder, TextEncoder, EEGTextModel, ProjectionHead
+if __package__:
+    from .dataset import ChineseEEGDataset, create_eegtext_dataloader
+    from .mindnet import EEGEncoder, TextEncoder, EEGTextModel
+else:
+    from dataset import ChineseEEGDataset, create_eegtext_dataloader
+    from mindnet import EEGEncoder, TextEncoder, EEGTextModel
 
 
 
@@ -32,6 +36,8 @@ def parse_args():
     parser.add_argument("--subject", default="sub-04")
     parser.add_argument("--filtered", default="filtered_0.5_30")
     parser.add_argument("--run-num", type=int, default=7, help="加载第 1 至 N 个 run")
+    parser.add_argument("--include-padding", action=argparse.BooleanOptionalAction, default=True,
+                        help="保留含补零点的 EEG–文本配对（用 --no-include-padding 排除）")
     parser.add_argument("--val-runs", type=int, nargs="+", help="验证 run 编号，从 1 开始；默认最后一个")
     parser.add_argument("--epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -76,6 +82,7 @@ def make_loaders(args, device):
         filtered=args.filtered,
         subject=args.subject, 
         run_num=args.run_num,
+        include_padding=args.include_padding,
     )
     train_indices, val_indices = [], []
     for index, sample in enumerate(dataset.samples):
@@ -115,14 +122,20 @@ def make_loaders(args, device):
 
 def train_epoch(model, loader, optimizer, device, args):
     model.train()
-    total_loss, count = 0.0, 0
+    total_loss, count, skipped_batches = 0.0, 0, 0
     for step, batch in enumerate(loader, 1):
+        # 单一字词 batch 没有负样本，不用于辨别字词身份的训练。
+        if batch["word_id"].unique().numel() < 2:
+            skipped_batches += 1
+            continue
         eeg = batch["eeg"].to(device, non_blocking=True) * args.eeg_scale
         # 文本是字符串列表；分词后的张量由 TextEncoder 移到模型设备。
         text = batch["text"]
         optimizer.zero_grad(set_to_none=True)
         outputs = model(eeg, text)
-        loss = model.contrastive_loss(outputs["eeg_embedding"], outputs["text_embedding"])
+        loss = model.contrastive_loss(
+            outputs["eeg_embedding"], outputs["text_embedding"], batch["word_id"],
+        )
         if not torch.isfinite(loss):
             raise FloatingPointError(f"训练第 {step} 批出现非有限损失")
         loss.backward()
@@ -135,26 +148,32 @@ def train_epoch(model, loader, optimizer, device, args):
         print(f"  step {step}/{len(loader)}  train_loss={total_loss / count:.4f}", flush=True)
         # if step % args.log_every == 0 or step == len(loader):
         #     print(f"  step {step}/{len(loader)}  train_loss={total_loss / count:.4f}", flush=True)
+    if count == 0:
+        raise ValueError("No training batches contain at least two distinct word_ids")
+    if skipped_batches:
+        print(f"跳过 {skipped_batches} 个不含不同字词负样本的 batch", flush=True)
     return total_loss / count
 
 
 @torch.no_grad()
 def validate(model, loader, device, args):
     """以整个验证集为候选库，分块计算双向对比损失和 Recall@1。
-    正样本是数据集配对索引；相同文本的不同样本仍作为不同候选。
+    保留全部候选；同 word_id 的所有出现均为正样本，Recall@1 按字词身份计分。
     向量保存在 CPU，避免一次分配完整 N×N 相似度矩阵。
     """
     model.eval()
-    eeg_features, text_features = [], []
+    eeg_features, text_features, word_ids = [], [], []
     for i, batch in enumerate(loader):
         eeg = batch["eeg"].to(device, non_blocking=True) * args.eeg_scale
         text = batch["text"]
         outputs = model(eeg, text)
         eeg_features.append(outputs["eeg_embedding"].cpu())
         text_features.append(outputs["text_embedding"].cpu())
+        word_ids.append(batch["word_id"].cpu())
         print(f"val step {i}/{len(loader)}")
     eeg_features = torch.cat(eeg_features) # (N, D)
     text_features = torch.cat(text_features) # (N, D)
+    word_ids = torch.cat(word_ids) # 全 Dataset 一致的标签，跨 batch 同字仍为正样本。
     count = len(eeg_features) # N
     loss_sum, hits = 0.0, []
     for queries, candidates in ((eeg_features, text_features), (text_features, eeg_features)):
@@ -164,11 +183,10 @@ def validate(model, loader, device, args):
             logits = queries[start:end] @ candidates.T / model.temperature
             if not torch.isfinite(logits).all():
                 raise FloatingPointError("验证相似度出现非有限值")
-            labels = torch.arange(start, end)
-            loss_sum += F.cross_entropy(logits, labels, reduction="sum").item()
-            # print(logits.argmax(dim=1))
-            # print(labels)
-            correct += (logits.argmax(dim=1) == labels).sum().item()
+            positive_mask = word_ids[start:end, None] == word_ids[None, :]
+            loss_sum += model.multi_positive_loss(logits, positive_mask).item() * (end - start)
+            predicted_ids = word_ids[logits.argmax(dim=1)]
+            correct += (predicted_ids == word_ids[start:end]).sum().item()
         hits.append(correct / count)
     return {
         "val_loss": loss_sum / (2 * count),
@@ -195,7 +213,7 @@ def main():
 
     train_loader, val_loader, n_chans = make_loaders(args, device)
     model = EEGTextModel(
-        eeg_encoder=EEGEncoder(),
+        eeg_encoder=EEGEncoder(n_chans=n_chans),
         text_encoder=TextEncoder(),
         freeze_text_encoder=args.freeze_text_encoder,
         freeze_eeg_encoder=args.freeze_eeg_encoder,
@@ -223,6 +241,7 @@ def main():
     config["text_model"] = model.text_encoder.tokenizer.name_or_path
     config["text_max_length"] = model.text_encoder.max_length
     config["train_runs"] = [run for run in range(1, args.run_num + 1) if run not in args.val_runs]
+    config["contrastive_objective"] = "symmetric_multi_positive_word_identity"
     (output_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"device={device}, channels={n_chans}", flush=True)
     print(f"train={len(train_loader.dataset)}, val={len(val_loader.dataset)}, val_runs={args.val_runs}")
@@ -233,13 +252,11 @@ def main():
         started = time.perf_counter()
         print(f"Epoch {epoch}/{args.epochs}", flush=True)
         train_loss = train_epoch(model, train_loader, optimizer, device, args)
-        val_loss, eeg_to_text_r1, text_to_eeg_r1 = validate(model, val_loader, device, args)
+        validation_metrics = validate(model, val_loader, device, args)
         metrics = {
             "epoch": epoch, 
             "train_loss": train_loss, 
-            "val_loss": val_loss,
-            "eeg_to_text_r1": eeg_to_text_r1,
-            "text_to_eeg_r1": text_to_eeg_r1,
+            **validation_metrics,
             "seconds": time.perf_counter() - started,
         }
         improved = metrics["val_loss"] < best_loss

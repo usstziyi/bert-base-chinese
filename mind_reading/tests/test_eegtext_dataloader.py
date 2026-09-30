@@ -94,7 +94,10 @@ class EEGTextDataLoaderTests(unittest.TestCase):
         self.assertIsInstance(eeg_words, list)
         self.assertEqual(len(eeg_words), 15)
         self.assertEqual([w['row_num'] for w in eeg_words], [1] + [2] * 8 + [3] * 3 + [4] * 3)
+        self.assertEqual([w['is_padding'] for w in eeg_words],
+                         [True] + [False] * 8 + [False, True, True] + [False, False, True])
         for eeg_word in eeg_words:
+            self.assertIsInstance(eeg_word['is_padding'], bool)
             self.assertEqual(eeg_word['eeg'].shape, (2, 100))
             self.assertNotIn('is_chapter', eeg_word)
             self.assertNotIn('n_chars', eeg_word)
@@ -132,9 +135,53 @@ class EEGTextDataLoaderTests(unittest.TestCase):
         self.assertEqual(batches[0]['text'], ['人', 'B'])
         self.assertEqual(batches[0]['row_num'].tolist(), [3, 2])
         self.assertEqual(batches[0]['char_idx'].tolist(), [2, 1])
+        self.assertEqual(batches[0]['is_padding'].dtype, torch.bool)
+        self.assertEqual(batches[0]['is_padding'].tolist(), [True, False])
         self.assertFalse(batches[0]['eeg'][0].any())
         self.assertEqual(batches[1]['eeg'].shape, (1, 2, 100))
         self.assertEqual(batches[1]['row_num'].tolist(), [4])
+
+    def test_dataset_can_exclude_partial_and_full_padding_without_shifting_pairs(self):
+        dataset = self.dataset(include_padding=False)
+        self.assertFalse(dataset.include_padding)
+        self.assertEqual(len(dataset), 11)
+        self.assertTrue(all(not dataset[i]['is_padding'] for i in range(len(dataset))))
+        self.assertEqual([s['word_idx'] for s in dataset.samples], list(range(1, 10)) + [12, 13])
+        self.assertEqual([(dataset[i]['row_num'], dataset[i]['char_idx'], dataset[i]['text'])
+                          for i in range(8, 11)], [(3, 0, '天'), (4, 0, '天'), (4, 1, '地')])
+        self.assertEqual(dataset[9]['eeg'][0, 0].item(), 1300)
+        # 章节本身含补零，include_chapters=True 也不能绕过 padding 过滤。
+        self.assertEqual(len(self.dataset(include_chapters=True, include_padding=False)), 11)
+
+    def test_word_ids_follow_text_identity_across_rows_filtering_and_batches(self):
+        dataset = self.dataset()
+        self.assertEqual(dataset[8]['text'], dataset[11]['text'])
+        self.assertEqual(dataset[8]['word_id'], dataset[11]['word_id'])
+        self.assertNotEqual(dataset[8]['word_id'], dataset[9]['word_id'])
+        filtered = self.dataset(include_padding=False)
+        self.assertEqual(filtered[8]['word_id'], dataset[8]['word_id'])
+        batches = list(create_eegtext_dataloader(Subset(dataset, [8, 9, 11]), batch_size=2))
+        self.assertEqual(batches[0]['word_id'].dtype, torch.long)
+        self.assertEqual(batches[0]['word_id'][0], batches[1]['word_id'][0])
+
+    def test_dataset_rejects_empty_result_after_padding_filtering(self):
+        events = pd.read_csv(self.events_path, sep='\t')
+        for start, stop in [(2, 95), (100, 924), (1000, 1194), (1300, 1569)]:
+            events.loc[events['sample'] == stop, 'sample'] = start + 49
+        events.to_csv(self.events_path, sep='\t', index=False)
+        with self.assertRaisesRegex(ValueError, 'after chapter/padding filtering'):
+            self.dataset(include_padding=False)
+
+    def test_padding_flag_uses_length_rather_than_signal_values(self):
+        raw = FakeRaw()
+        raw.data.fill(0)
+        events = pd.read_csv(self.events_path, sep='\t')
+        events.loc[events['sample'] == 1194, 'sample'] = 1299
+        events.to_csv(self.events_path, sep='\t', index=False)
+        with patch('mind_reading.dataset.load_eeg.mne.io.read_raw_brainvision', return_value=raw):
+            words = load_eeg('test', run_num=1,
+                             row_char_counts={(1, 1): 1, (1, 2): 8, (1, 3): 3, (1, 4): 3})
+        self.assertEqual([w['is_padding'] for w in words[9:12]], [False, False, False])
 
     def test_main_row_selection_and_repeated_text_rows(self):
         self.records = [('你好人\n背景\n下行', index, 0, 3) for index in range(3)] + [
@@ -155,6 +202,7 @@ class EEGTextDataLoaderTests(unittest.TestCase):
         with patch('mind_reading.dataset.load_eeg.mne.io.read_raw_brainvision', side_effect=[FakeRaw(), FakeRaw()]):
             dataset = ChineseEEGDataset('test', run_num=None, include_chapters=True)
         self.assertEqual(len(dataset.eeg_words), 30)
+        self.assertEqual(dataset[1]['word_id'], dataset[16]['word_id'])
         self.assertEqual([(w['run_num'], w['row_num'], w['char_idx']) for w in words],
                          [(w['run_num'], w['row_num'], w['char_idx']) for w in dataset.eeg_words])
         for path in self.display_path.parent.glob('*.xlsx'):
@@ -234,6 +282,7 @@ class EEGTextDataLoaderTests(unittest.TestCase):
                              row_char_counts={(1, 1): 1, (1, 2): 8, (1, 3): 3, (1, 4): 3})
         np.testing.assert_array_equal(words[-1]['eeg'][:, :40], raw.data[:, 1500:1540])
         self.assertFalse(words[-1]['eeg'][:, 40:].any())
+        self.assertTrue(words[-1]['is_padding'])
         self.assertTrue(raw.closed)
 
     def test_invalid_batch_is_rejected(self):

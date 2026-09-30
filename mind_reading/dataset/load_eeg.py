@@ -63,7 +63,8 @@ def load_eeg(novel_name='LittlePrince', filtered='filtered_0.5_30', subject='sub
     row_char_counts 为 {(run_num, row_num): 高亮字符数}，需包含全部章节和正文行。
     每行从 ROWS 起保留至多 字符数×100 点，不越过 ROWE 或录制末尾；
     多余尾部丢弃，缺失部分右补零，恰好返回对应数量的 (C,100) 片段，单位为 V。
-    每个字典包含 eeg、run_num/row_num/char_idx、novel_name 和 subject。
+    每个字典包含 eeg、run_num/row_num/char_idx、novel_name、subject 和 is_padding。
+    is_padding 为 bool，片段包含任意补零点（部分或全部补零）时为 True。
     本模块不读取文本；run_num=None 从 EEG 事件文件发现连续 run。
     """
     if any(isinstance(count, bool) or not isinstance(count, int) or count <= 0
@@ -114,6 +115,7 @@ def load_eeg(novel_name='LittlePrince', filtered='filtered_0.5_30', subject='sub
                 for char_idx in range(n_segments):
                     eeg_words.append(dict(
                         eeg=segments[char_idx], 
+                        is_padding=(char_idx + 1) * SAMPLES_PER_CHAR > count,
                         row_num=row_num, 
                         char_idx=char_idx,
                         novel_name=novel_name, 
@@ -123,4 +125,3 @@ def load_eeg(novel_name='LittlePrince', filtered='filtered_0.5_30', subject='sub
         finally:
             raw.close()
     return eeg_words
-

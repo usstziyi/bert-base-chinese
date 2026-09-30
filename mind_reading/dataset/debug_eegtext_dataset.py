@@ -11,7 +11,7 @@ else:
 
 
 if __name__ == '__main__':
-    dataset = ChineseEEGDataset(novel_name='LittlePrince', subject='sub-04', run_num=7)
+    dataset = ChineseEEGDataset(novel_name='LittlePrince', subject='sub-04', run_num=7, include_padding=False)
     print(f'Character samples: {len(dataset)}, samples per character: {dataset.samples_per_char}')
     for run_num, items in groupby(dataset.eeg_words, key=lambda word: word['run_num']):
         items = list(items)

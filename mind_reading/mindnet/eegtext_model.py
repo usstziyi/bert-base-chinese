@@ -34,7 +34,8 @@ class ProjectionHead(nn.Module):
 
 class EEGTextModel(nn.Module):
     """
-    EEG-Text multimodal alignment model.
+    EEG-Text 字词身份对齐模型：双编码器 + 双投影头 + 多正样本双向损失。
+    相同 word_id 的全部跨模态配对都是正样本，保留重复字词的全部出现。
 
     EEG:
         eeg
@@ -221,20 +222,43 @@ class EEGTextModel(nn.Module):
     # Contrastive loss
     # ========================================================
 
+    @staticmethod
+    def multi_positive_loss(logits, positive_mask):
+        """对每个 query 的全部正样本 log probability 求平均，再平均 queries。
+
+        logits / positive_mask: (N_queries, N_candidates)，支持分块验证。
+        logits 已除以温度；mask 为 bool，True 表示正样本。每行至少一个正样本。
+        全部候选都是正样本时仍计算 uniform target 的交叉熵，其最小值为
+        log(N_candidates)，不能把它理解成具有负样本的辨别任务。
+        """
+        if logits.ndim != 2 or min(logits.shape) == 0:
+            raise ValueError("logits must have a non-empty (queries, candidates) shape")
+        if positive_mask.shape != logits.shape or positive_mask.dtype != torch.bool:
+            raise ValueError("positive_mask must be bool and have the same shape as logits")
+        positive_mask = positive_mask.to(device=logits.device)
+        positive_counts = positive_mask.sum(dim=1)
+        if torch.any(positive_counts == 0):
+            raise ValueError("Each query must have at least one positive candidate")
+        # 半精度下用 float32 计算 log_softmax，保留梯度。
+        if logits.dtype in (torch.float16, torch.bfloat16):
+            logits = logits.float()
+        log_probs = F.log_softmax(logits, dim=1)
+        positive_log_probs = log_probs.masked_fill(~positive_mask, 0)
+        return -(positive_log_probs.sum(dim=1) / positive_counts).mean()
+
     def contrastive_loss(
         self,
         eeg_embedding,
         text_embedding,
+        word_ids,
     ):
         """
-        CLIP-style symmetric contrastive loss.
-        eeg_embedding:
-            (B, D)
-        text_embedding:
-            (B, D)
-        cosine similarity
-        因为前面已经 normalize：
-        z1 @ z2.T == cosine similarit
+        多正样本双向跨模态对比损失。
+
+        eeg_embedding / text_embedding: 已 L2 归一化的 (B, D)。
+        word_ids: (B,) 整数 Tensor，两分支使用相同顺序的字词身份标签。
+        M[i, j] = (word_ids[i] == word_ids[j])，包括对角线和所有同字出现。
+        不允许省略标签而退回按样本索引对齐；标签全部唯一时等价于 CLIP 损失。
         """
 
         if (
@@ -242,16 +266,24 @@ class EEGTextModel(nn.Module):
             or text_embedding.ndim != 2
             or eeg_embedding.shape != text_embedding.shape
             or eeg_embedding.shape[0] == 0
+            or eeg_embedding.shape[1] == 0
         ):
             raise ValueError("Embeddings must have the same non-empty (B, D) shape")
+        if (
+            not isinstance(word_ids, torch.Tensor)
+            or word_ids.shape != (eeg_embedding.shape[0],)
+            or word_ids.dtype not in (torch.uint8, torch.int8, torch.int16,
+                                      torch.int32, torch.int64)
+        ):
+            raise ValueError("word_ids must be an integer Tensor with shape (B,)")
+        word_ids = word_ids.to(device=eeg_embedding.device)
+        positive_mask = word_ids[:, None] == word_ids[None, :]
         # (B, D) @ (D, B) -> (B, B)
         logits = (eeg_embedding @ text_embedding.T) / self.temperature
-        batch_size = eeg_embedding.size(0)
-        labels = torch.arange(batch_size, device=eeg_embedding.device)
         # EEG -> Text
-        loss_eeg_to_text = F.cross_entropy(logits, labels, reduction="mean")
-        # Text -> EEG  
-        loss_text_to_eeg = F.cross_entropy(logits.T, labels, reduction="mean")
+        loss_eeg_to_text = self.multi_positive_loss(logits, positive_mask)
+        # Text -> EEG，每个文本的所有同字 EEG 都是正样本。
+        loss_text_to_eeg = self.multi_positive_loss(logits.T, positive_mask.T)
         # 计算 EEG 与文本之间的双向对比损失
         loss = (loss_eeg_to_text + loss_text_to_eeg) / 2
         return loss
