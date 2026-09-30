@@ -86,11 +86,9 @@ def make_loaders(args, device):
         raise ValueError("训练集和验证集都至少需要两个 EEG–文本配对样本")
 
     first = dataset[train_indices[0]]
-    n_chans, sfreq = first["eeg"].shape[0], first["sfreq"]
-    for run in dataset.eeg_data:
-        if not math.isclose(float(run["sfreq"]), sfreq):
-            raise ValueError("各 run 采样率必须一致")
-        if any(segment.shape[0] != n_chans for segment in run["eeg_segments"]):
+    n_chans = first["eeg"].shape[0]
+    for word in dataset.eeg_words:
+        if word["eeg"].shape[0] != n_chans:
             raise ValueError("各 EEG 片段的通道数必须一致")
 
     options = dict(
@@ -112,7 +110,7 @@ def make_loaders(args, device):
         shuffle=False, 
         **options
     )
-    return train_loader, val_loader, n_chans, sfreq
+    return train_loader, val_loader, n_chans
 
 
 def train_epoch(model, loader, optimizer, device, args):
@@ -123,8 +121,7 @@ def train_epoch(model, loader, optimizer, device, args):
         # 文本是字符串列表；分词后的张量由 TextEncoder 移到模型设备。
         text = batch["text"]
         optimizer.zero_grad(set_to_none=True)
-        eeg_mask = batch["attention_mask"].to(device, non_blocking=True)
-        outputs = model(eeg, text, eeg_attention_mask=eeg_mask)
+        outputs = model(eeg, text)
         loss = model.contrastive_loss(outputs["eeg_embedding"], outputs["text_embedding"])
         if not torch.isfinite(loss):
             raise FloatingPointError(f"训练第 {step} 批出现非有限损失")
@@ -152,8 +149,7 @@ def validate(model, loader, device, args):
     for i, batch in enumerate(loader):
         eeg = batch["eeg"].to(device, non_blocking=True) * args.eeg_scale
         text = batch["text"]
-        eeg_mask = batch["attention_mask"].to(device, non_blocking=True)
-        outputs = model(eeg, text, eeg_attention_mask=eeg_mask)
+        outputs = model(eeg, text)
         eeg_features.append(outputs["eeg_embedding"].cpu())
         text_features.append(outputs["text_embedding"].cpu())
         print(f"val step {i}/{len(loader)}")
@@ -197,7 +193,7 @@ def main():
         "cuda" if torch.cuda.is_available() else "cpu"
     ) if args.device == "auto" else torch.device(args.device)
 
-    train_loader, val_loader, n_chans, sfreq = make_loaders(args, device)
+    train_loader, val_loader, n_chans = make_loaders(args, device)
     model = EEGTextModel(
         eeg_encoder=EEGEncoder(),
         text_encoder=TextEncoder(),
@@ -223,12 +219,12 @@ def main():
     # config.json
     output_dir = args.output_dir / datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     output_dir.mkdir(parents=True, exist_ok=False)
-    config = {**vars(args), "output_dir": str(output_dir), "n_chans": n_chans, "sfreq": sfreq}
+    config = {**vars(args), "output_dir": str(output_dir), "n_chans": n_chans}
     config["text_model"] = model.text_encoder.tokenizer.name_or_path
     config["text_max_length"] = model.text_encoder.max_length
     config["train_runs"] = [run for run in range(1, args.run_num + 1) if run not in args.val_runs]
     (output_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"device={device}, channels={n_chans}, sfreq={sfreq}", flush=True)
+    print(f"device={device}, channels={n_chans}", flush=True)
     print(f"train={len(train_loader.dataset)}, val={len(val_loader.dataset)}, val_runs={args.val_runs}")
     print(f"保存目录：{output_dir}", flush=True)
 
