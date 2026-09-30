@@ -37,6 +37,34 @@ loss.backward()
 出现也算正确。有重复正样本时，损失的最小值不一定为零；有 k 个正样本时，
 该 query 的交叉熵下界为 `log(k)`。跨不同候选库规模比较损失时需要考虑这一点。
 
+## 同一 checkpoint 的 batch 评估
+
+每轮参数更新结束后，用同一份模型权重、`model.eval()` 和 `torch.no_grad()`
+分别评估训练集和验证集。两个 split 都使用与训练相同的 batch size，在各自
+batch 内计算双向多正样本损失；不反向传播或更新参数。评估分组只在运行开始时
+随机生成一次，训练评估 seed 为 `--seed`，验证评估为 `--seed + 1`，每轮保持一致，
+并使用独立的随机生成器，避免消费训练 loader 的 shuffle 随机状态。
+
+日志和 checkpoint metrics 中的字段含义：
+
+| 字段 | 含义 |
+| --- | --- |
+| `train_loss` | 参数更新过程中累计的训练损失，训练模式开启 dropout |
+| `train_eval_batch_loss` | 本轮结束的固定权重，在训练集上以 eval 模式计算的 batch loss |
+| `val_batch_loss` | 同一权重，在验证集上以 eval 模式计算的 batch loss |
+| `val_loss` | 全验证集作为候选库的损失，控制台标为 `val_full_loss` |
+| `eeg_to_text_r1` / `text_to_eeg_r1` | 全验证候选库上的字词身份 Recall@1 |
+
+判断 batch 级泛化时，比较 `train_eval_batch_loss` 和 `val_batch_loss`。
+`best.pt` 按最低 `val_batch_loss` 选择，checkpoint 保存 `best_val_batch_loss`；
+`last.pt` 保存最新轮次。配置中记录评估方式和 checkpoint 选择指标。
+旧日志的 `val_loss` 仍然是全库损失，不能直接与新的 `val_batch_loss` 比较。
+
+两套 batch 评估都排除不足一批的尾部，保证候选数量一致，并跳过仅含一种字词
+的 batch；`*_samples`、`*_excluded_samples` 和 `*_skipped_batches` 记录有效样本、
+排除样本和跳过批次数。每个 split 至少要能组成一个完整且含两种字词的 batch，
+否则评估报错；数据较少时需降低 batch size。新增评估会增加每轮运行时间。
+
 ## 运行
 
 在项目根目录、已安装依赖的 Python 环境中执行：

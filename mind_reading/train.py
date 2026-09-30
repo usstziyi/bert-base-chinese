@@ -3,6 +3,7 @@
 在项目根目录运行：python -m mind_reading.train --epochs 30 --batch-size 32
 也支持直接运行 mind_reading/train.py。默认将最后一个 run 留作验证集。
 保留重复字词样本，同 word_id 的全部跨模态候选均为正样本。
+每轮更新结束后，同一 checkpoint 用 eval() 分别评估训练集和验证集的 batch loss。
 编码器结构、BERT 模型和文本最大长度由各 encoder 内部定义。
 """
 
@@ -18,7 +19,7 @@ from datetime import datetime
 
 import numpy as np
 import torch
-from torch.utils.data import Subset
+from torch.utils.data import DataLoader, Subset
 
 
 if __package__:
@@ -120,6 +121,62 @@ def make_loaders(args, device):
     return train_loader, val_loader, n_chans
 
 
+def make_batch_eval_loader(source_loader, *, batch_size, seed):
+    """一次性固定随机分组；不消费训练 loader 的随机状态。
+
+    两个 split 都使用完整 batch，保证候选数量相同。复用 source 的数据与
+    collate_fn，支持嵌套 Subset；不复制 EEG，不改变原 loader 的采样顺序。
+    """
+    if batch_size < 2 or len(source_loader.dataset) < batch_size:
+        raise ValueError("Batch evaluation requires batch_size >= 2 and at least one full batch per split")
+    generator = torch.Generator().manual_seed(seed)
+    indices = torch.randperm(len(source_loader.dataset), generator=generator).tolist()
+    return DataLoader(
+        Subset(source_loader.dataset, indices),
+        batch_size=batch_size,
+        shuffle=False,
+        drop_last=True,
+        num_workers=source_loader.num_workers,
+        pin_memory=source_loader.pin_memory,
+        collate_fn=source_loader.collate_fn,
+        generator=generator,
+    )
+
+
+@torch.no_grad()
+def evaluate_batch_loss(model, loader, device, args, *, split_name="eval"):
+    """冻结当前权重、关闭 dropout，以 batch 内候选计算多正样本损失。
+
+    输入为固定分组且 drop_last=True 的 loader。按有效样本数加权平均，
+    与训练一样跳过没有不同字负样本的 batch；报告尾部及跳过的样本数量。
+    """
+    model.eval()
+    loss_sum, count, skipped_batches = 0.0, 0, 0
+    for step, batch in enumerate(loader, 1):
+        if batch["word_id"].unique().numel() < 2:
+            skipped_batches += 1
+            continue
+        eeg = batch["eeg"].to(device, non_blocking=True) * args.eeg_scale
+        outputs = model(eeg, batch["text"])
+        loss = model.contrastive_loss(
+            outputs["eeg_embedding"], outputs["text_embedding"], batch["word_id"],
+        )
+        if not torch.isfinite(loss):
+            raise FloatingPointError(f"{split_name} batch evaluation produced a non-finite loss")
+        loss_sum += loss.item() * eeg.size(0)
+        count += eeg.size(0)
+        if step == 1 or step == len(loader) or step % getattr(args, "log_every", 20) == 0:
+            print(f"  {split_name} eval batch {step}/{len(loader)}  loss={loss_sum / count:.4f}", flush=True)
+    if count == 0:
+        raise ValueError(f"{split_name}: no evaluation batches contain at least two distinct word_ids")
+    return {
+        "loss": loss_sum / count,
+        "samples": count,
+        "skipped_batches": skipped_batches,
+        "excluded_samples": len(loader.dataset) - count,
+    }
+
+
 def train_epoch(model, loader, optimizer, device, args):
     model.train()
     total_loss, count, skipped_batches = 0.0, 0, 0
@@ -212,6 +269,8 @@ def main():
     ) if args.device == "auto" else torch.device(args.device)
 
     train_loader, val_loader, n_chans = make_loaders(args, device)
+    train_eval_loader = make_batch_eval_loader(train_loader, batch_size=args.batch_size, seed=args.seed)
+    val_eval_loader = make_batch_eval_loader(val_loader, batch_size=args.batch_size, seed=args.seed + 1)
     model = EEGTextModel(
         eeg_encoder=EEGEncoder(n_chans=n_chans),
         text_encoder=TextEncoder(),
@@ -242,6 +301,15 @@ def main():
     config["text_max_length"] = model.text_encoder.max_length
     config["train_runs"] = [run for run in range(1, args.run_num + 1) if run not in args.val_runs]
     config["contrastive_objective"] = "symmetric_multi_positive_word_identity"
+    config["batch_evaluation"] = {
+        "model_mode": "eval",
+        "batch_size": args.batch_size,
+        "train_seed": args.seed,
+        "val_seed": args.seed + 1,
+        "drop_last": True,
+        "skip_single_word_batches": True,
+    }
+    config["checkpoint_selection_metric"] = "val_batch_loss"
     (output_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"device={device}, channels={n_chans}", flush=True)
     print(f"train={len(train_loader.dataset)}, val={len(val_loader.dataset)}, val_runs={args.val_runs}")
@@ -252,22 +320,27 @@ def main():
         started = time.perf_counter()
         print(f"Epoch {epoch}/{args.epochs}", flush=True)
         train_loss = train_epoch(model, train_loader, optimizer, device, args)
+        # 三次评估之间不更新参数，全部使用该轮结束时的同一份权重。
+        train_batch_metrics = evaluate_batch_loss(model, train_eval_loader, device, args, split_name="train")
+        val_batch_metrics = evaluate_batch_loss(model, val_eval_loader, device, args, split_name="val")
         validation_metrics = validate(model, val_loader, device, args)
         metrics = {
             "epoch": epoch, 
             "train_loss": train_loss, 
+            **{f"train_eval_batch_{key}": value for key, value in train_batch_metrics.items()},
+            **{f"val_batch_{key}": value for key, value in val_batch_metrics.items()},
             **validation_metrics,
             "seconds": time.perf_counter() - started,
         }
-        improved = metrics["val_loss"] < best_loss
-        best_loss = min(best_loss, metrics["val_loss"])
+        improved = metrics["val_batch_loss"] < best_loss
+        best_loss = min(best_loss, metrics["val_batch_loss"])
         checkpoint = {
             "epoch": epoch, 
             "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(), 
             "config": config,
             "metrics": metrics, 
-            "best_val_loss": best_loss,
+            "best_val_batch_loss": best_loss,
         }
         for name in (["last.pt", "best.pt"] if improved else ["last.pt"]):
             temporary = output_dir / f"{name}.tmp"
@@ -278,11 +351,19 @@ def main():
         with (output_dir / "history.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(metrics, ensure_ascii=False) + "\n")
         print(
-            f"train_loss={train_loss:.4f}  val_loss={metrics['val_loss']:.4f}  "
-            f"EEG→Text R@1={metrics['eeg_to_text_r1']:.2%}  "
-            f"Text→EEG R@1={metrics['text_to_eeg_r1']:.2%}", flush=True,
+            f"train_loss={train_loss:.4f}  "
+            f"train_eval_batch_loss={metrics['train_eval_batch_loss']:.4f}  "
+            f"val_batch_loss={metrics['val_batch_loss']:.4f}  "
+            f"val_full_loss={metrics['val_loss']:.4f}  "
+            f"full EEG→Text R@1={metrics['eeg_to_text_r1']:.2%}  "
+            f"full Text→EEG R@1={metrics['text_to_eeg_r1']:.2%}", flush=True,
         )
-    print(f"训练结束，最佳验证损失：{best_loss:.4f}；权重：{output_dir / 'best.pt'}")
+        print(
+            f"batch eval samples: train={metrics['train_eval_batch_samples']} "
+            f"(excluded={metrics['train_eval_batch_excluded_samples']}), "
+            f"val={metrics['val_batch_samples']} (excluded={metrics['val_batch_excluded_samples']})", flush=True,
+        )
+    print(f"训练结束，最佳 val_batch_loss：{best_loss:.4f}；权重：{output_dir / 'best.pt'}")
 
 
 if __name__ == "__main__":

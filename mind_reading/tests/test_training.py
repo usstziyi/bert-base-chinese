@@ -46,6 +46,80 @@ def make_model(identity_projections=False):
 
 
 class TrainingTests(unittest.TestCase):
+    def test_fixed_eval_groups_repeat_without_consuming_training_rng(self):
+        samples = make_loader().dataset * 4
+        source_generator = torch.Generator().manual_seed(19)
+        source = DataLoader(samples, batch_size=4, shuffle=True, generator=source_generator)
+        rng_before = source_generator.get_state().clone()
+        eval_loader = train.make_batch_eval_loader(source, batch_size=4, seed=7)
+        other = train.make_batch_eval_loader(source, batch_size=4, seed=7)
+        self.assertEqual(eval_loader.dataset.indices, other.dataset.indices)
+        self.assertEqual(sorted(eval_loader.dataset.indices), list(range(len(samples))))
+        self.assertNotEqual(eval_loader.dataset.indices, list(range(len(samples))))
+        self.assertTrue(eval_loader.drop_last)
+        self.assertEqual(eval_loader.batch_size, 4)
+        first_pass = [batch['word_id'].tolist() for batch in eval_loader]
+        self.assertEqual(first_pass, [batch['word_id'].tolist() for batch in eval_loader])
+        torch.testing.assert_close(source_generator.get_state(), rng_before)
+
+    def test_batch_evaluation_uses_eval_without_mutating_weights_buffers_or_gradients(self):
+        model = make_model().train()
+        for parameter in model.parameters():
+            if parameter.requires_grad:
+                parameter.grad = torch.ones_like(parameter)
+        state_before = {key: value.clone() for key, value in model.state_dict().items()}
+        gradients_before = [parameter.grad.clone() for parameter in model.parameters()]
+        observations = []
+
+        def inspect_forward(module, inputs):
+            observations.append((module.training, torch.is_grad_enabled()))
+
+        hook = model.register_forward_pre_hook(inspect_forward)
+        self.addCleanup(hook.remove)
+        loader = train.make_batch_eval_loader(make_loader(batch_size=3), batch_size=3, seed=42)
+        args = SimpleNamespace(eeg_scale=1.)
+        with contextlib.redirect_stdout(io.StringIO()):
+            metrics = train.evaluate_batch_loss(model, loader, torch.device('cpu'), args)
+            repeated = train.evaluate_batch_loss(model, loader, torch.device('cpu'), args)
+        self.assertEqual(metrics, repeated)
+        self.assertEqual(observations, [(False, False), (False, False)])
+        self.assertEqual(metrics['samples'], 3)
+        for key, value in model.state_dict().items():
+            torch.testing.assert_close(value, state_before[key])
+        for parameter, gradient in zip(model.parameters(), gradients_before):
+            torch.testing.assert_close(parameter.grad, gradient)
+
+    def test_batch_loss_matches_manual_batch_candidates_and_reports_excluded_samples(self):
+        model = make_model(identity_projections=True)
+        # 固定批次为：同字/不同字/同字 + 一个尾部样本，只对前三条计算损失。
+        loader = DataLoader(make_loader().dataset + [make_loader().dataset[1]], batch_size=3, drop_last=True)
+        features, ids = torch.tensor([[1., 0.], [0., 1.], [1., 0.]]), torch.tensor([0, 1, 0])
+        expected = model.contrastive_loss(features, features, ids).item()
+        with contextlib.redirect_stdout(io.StringIO()):
+            metrics = train.evaluate_batch_loss(model, loader, torch.device('cpu'), SimpleNamespace(eeg_scale=1.))
+        self.assertAlmostEqual(metrics['loss'], expected, places=6)
+        self.assertEqual(metrics['samples'], 3)
+        self.assertEqual(metrics['excluded_samples'], 1)
+        self.assertEqual(metrics['skipped_batches'], 0)
+
+    def test_eval_reports_skipped_single_word_batches_and_rejects_unusable_split(self):
+        samples = make_loader().dataset
+        loader = DataLoader([samples[0], samples[2], samples[0], samples[1], samples[0]],
+                            batch_size=2, drop_last=True)
+        model = make_model(identity_projections=True)
+        with contextlib.redirect_stdout(io.StringIO()):
+            metrics = train.evaluate_batch_loss(model, loader, torch.device('cpu'), SimpleNamespace(eeg_scale=1.))
+        self.assertEqual(metrics['samples'], 2)
+        self.assertEqual(metrics['skipped_batches'], 1)
+        self.assertEqual(metrics['excluded_samples'], 3)
+        with self.assertRaisesRegex(ValueError, 'full batch'):
+            train.make_batch_eval_loader(make_loader(), batch_size=4, seed=42)
+        with self.assertRaises(ValueError):
+            train.make_batch_eval_loader(make_loader(), batch_size=1, seed=42)
+        same_word_loader = DataLoader([samples[0]] * 4, batch_size=2, drop_last=True)
+        with contextlib.redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'distinct word_ids'):
+            train.evaluate_batch_loss(model, same_word_loader, torch.device('cpu'), SimpleNamespace(eeg_scale=1.))
+
     def test_chunked_validation_matches_full_multi_positive_loss_and_word_recall(self):
         model = make_model(identity_projections=True)
         loader = make_loader()
@@ -89,7 +163,7 @@ class TrainingTests(unittest.TestCase):
             train.train_epoch(model, [same_word_batch], optimizer, torch.device('cpu'), args)
 
     def test_main_runs_one_epoch_and_saves_numeric_metrics(self):
-        loader = make_loader()
+        loader = DataLoader(make_loader().dataset + [make_loader().dataset[1]], batch_size=2)
         with tempfile.TemporaryDirectory() as directory:
             with patch('sys.argv', ['train', '--epochs', '1', '--batch-size', '2', '--run-num', '2',
                                     '--device', 'cpu', '--eeg-scale', '1', '--no-include-padding',
@@ -104,11 +178,41 @@ class TrainingTests(unittest.TestCase):
             self.assertFalse(config['include_padding'])
             self.assertEqual(config['n_chans'], 2)
             self.assertEqual(config['contrastive_objective'], 'symmetric_multi_positive_word_identity')
-            for name in ('val_loss', 'eeg_to_text_r1', 'text_to_eeg_r1'):
+            self.assertEqual(config['checkpoint_selection_metric'], 'val_batch_loss')
+            self.assertEqual(config['batch_evaluation']['model_mode'], 'eval')
+            for name in ('val_loss', 'eeg_to_text_r1', 'text_to_eeg_r1',
+                         'train_eval_batch_loss', 'val_batch_loss'):
                 self.assertIsInstance(metrics[name], float)
+            self.assertAlmostEqual(metrics['train_eval_batch_loss'], metrics['val_batch_loss'], places=6)
+            self.assertEqual(metrics['train_eval_batch_samples'], 4)
+            self.assertEqual(metrics['val_batch_samples'], 4)
             for name in ('best.pt', 'last.pt'):
                 checkpoint = torch.load(output_dir / name, weights_only=True)
                 self.assertEqual(checkpoint['metrics'], metrics)
+                self.assertEqual(checkpoint['best_val_batch_loss'], metrics['val_batch_loss'])
+
+    def test_best_checkpoint_uses_val_batch_loss_instead_of_full_library_loss(self):
+        loader = DataLoader(make_loader().dataset + [make_loader().dataset[1]], batch_size=2)
+        batch_results = [{'loss': loss, 'samples': 4, 'excluded_samples': 0, 'skipped_batches': 0}
+                         for loss in (0.2, 0.3, 0.1, 0.4)]
+        full_results = [{'val_loss': loss, 'eeg_to_text_r1': 0., 'text_to_eeg_r1': 0.}
+                        for loss in (1.2, 1.0)]
+        with tempfile.TemporaryDirectory() as directory:
+            with patch('sys.argv', ['train', '--epochs', '2', '--batch-size', '2', '--run-num', '2',
+                                    '--device', 'cpu', '--eeg-scale', '1', '--output-dir', directory]), \
+                    patch.object(train, 'make_loaders', return_value=(loader, loader, 2)), \
+                    patch.object(train, 'TextEncoder', side_effect=WordTextEncoder), \
+                    patch.object(train, 'evaluate_batch_loss', side_effect=batch_results), \
+                    patch.object(train, 'validate', side_effect=full_results), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                train.main()
+            output_dir, = Path(directory).iterdir()
+            best = torch.load(output_dir / 'best.pt', weights_only=True)
+            last = torch.load(output_dir / 'last.pt', weights_only=True)
+            self.assertEqual(best['epoch'], 1)
+            self.assertEqual(last['epoch'], 2)
+            self.assertEqual(best['metrics']['val_batch_loss'], 0.3)
+            self.assertEqual(last['best_val_batch_loss'], 0.3)
 
 
 if __name__ == '__main__':
