@@ -21,6 +21,7 @@ data/ChineseEEG/*
 data/ChineseEEG/derivatives/*
 !data/ChineseEEG/derivatives/novels/
 
+#cpu/gpu config
 pyproject.*
 uv.lock
 src/
