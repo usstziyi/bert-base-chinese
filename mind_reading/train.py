@@ -268,6 +268,8 @@ def main():
         "cuda" if torch.cuda.is_available() else "cpu"
     ) if args.device == "auto" else torch.device(args.device)
 
+    print(f"device={device}")
+
     train_loader, val_loader, n_chans = make_loaders(args, device)
     train_eval_loader = make_batch_eval_loader(train_loader, batch_size=args.batch_size, seed=args.seed)
     val_eval_loader = make_batch_eval_loader(val_loader, batch_size=args.batch_size, seed=args.seed + 1)

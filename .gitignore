@@ -20,3 +20,7 @@ data/ChineseEEG/*
 !data/ChineseEEG/derivatives/
 data/ChineseEEG/derivatives/*
 !data/ChineseEEG/derivatives/novels/
+
+pyproject.*
+uv.lock
+src/
