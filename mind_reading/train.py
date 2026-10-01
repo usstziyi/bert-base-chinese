@@ -197,6 +197,8 @@ def main():
         "cuda" if torch.cuda.is_available() else "cpu"
     ) if args.device == "auto" else torch.device(args.device)
 
+    print(f"device={device}")
+
     train_loader, val_loader, n_chans, sfreq = make_loaders(args, device)
     model = EEGTextModel(
         eeg_encoder=EEGEncoder(),
