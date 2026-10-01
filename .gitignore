@@ -13,7 +13,13 @@ outputs/
 
 back/
 
-data/
+# Data：默认忽略，仅跟踪 novels 目录
+data/*
+!data/ChineseEEG/
+data/ChineseEEG/*
+!data/ChineseEEG/derivatives/
+data/ChineseEEG/derivatives/*
+!data/ChineseEEG/derivatives/novels/
 
 #cpu/gpu config
 pyproject.*
